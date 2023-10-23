@@ -287,7 +287,11 @@ def get_logger(args, name):
         data_tag = args.data.dataset
         config = OmegaConf.to_container(args, resolve=True)
 
-        wandb_entity = os.environ['WANDB_ENTITY']
+        if 'WANDB_ENTITY' in os.environ:
+            wandb_entity = os.environ['WANDB_ENTITY']
+        else:
+            wandb_entity = os.environ.get('WANDB_ENTITY', 'diffteam')
+
         assert len(wandb_entity) > 0, "WANDB_ENTITY not set"
 
         kwargs = {'name': run_name, 'project': 'dsbm_' + args.name, 'prefix': name, 'entity': wandb_entity,
