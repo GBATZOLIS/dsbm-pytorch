@@ -13,6 +13,7 @@ gamma_space: linspace
 symmetric_gamma: False
 
 first_coupling: ref
+dependent_coupling: None
 
 mean_match: False
 loss_scale: True

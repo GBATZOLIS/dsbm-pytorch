@@ -7,11 +7,12 @@ from bridge.runners.config_getters import get_datasets, get_valid_test_datasets
 from accelerate import Accelerator
 
 
+
 def run(args):
     accelerator = Accelerator(cpu=args.device == 'cpu', split_batches=True)
     accelerator.print('Directory: ' + os.getcwd())
 
-    init_ds, final_ds, mean_final, var_final = get_datasets(args)
+    init_ds, final_ds, mean_final, var_final = get_datasets(args, device=accelerator.device)
     valid_ds, test_ds = get_valid_test_datasets(args)
 
     final_cond_model = None

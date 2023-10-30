@@ -7,6 +7,7 @@ defaults:
   - model: UNET
   - method: dbdsb  #dsb, dbdsb
   - dataset: mnist_transfer
+  - vae: simple
   # - override hydra/launcher: submitit_slurm
 
 name: ${Dataset}_${data.dataset}

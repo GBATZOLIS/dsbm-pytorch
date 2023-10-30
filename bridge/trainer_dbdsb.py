@@ -14,7 +14,7 @@ import glob
 from .data import DBDSB_CacheLoader
 from .sde import *
 from .runners import *
-from .runners.config_getters import get_model, get_optimizer, get_plotter, get_logger
+from .runners.config_getters import get_vae_model, get_model, get_optimizer, get_plotter, get_logger
 from .runners.ema import EMAHelper
 
 # from torchdyn.core import NeuralODE
@@ -79,6 +79,9 @@ class IPF_DBDSB:
         # get models
         self.build_models()
         self.build_ema()
+
+        if args.dependent_coupling=='vae':
+            self.vae_model = self.build_vae_model(args)
 
         # get optims
         self.build_optimizers()
@@ -161,6 +164,26 @@ class IPF_DBDSB:
                     self.resume_f = True
                     self.checkpoint_f, self.sample_checkpoint_f, self.optimizer_checkpoint_f = [os.path.join(self.ckpt_dir_load, f"{ckpt_prefix}_{ckpt_f_suffix}.ckpt") for ckpt_prefix in self.ckpt_prefixes[3:]]
 
+    def build_vae_model(self, args):
+        # Instantiate and load the VAE model from the checkpoint
+        vae_model = get_vae_model(args)
+        vae_model = vae_model.load_from_checkpoint(checkpoint_path=args.vae_checkpoint_path)
+
+        # Set VAE to evaluation mode
+        vae_model = vae_model.eval()
+
+        # Load VAE onto the correct device
+        vae_model = vae_model.to(self.device)
+        
+        # Freeze the VAE to prevent its parameters from updating
+        for param in vae_model.parameters():
+            param.requires_grad = False
+        
+        # Wrap the VAE with accelerator (assuming you have an 'accelerator' attribute in your class)
+        vae_model = self.accelerator.prepare(vae_model)
+
+        return vae_model
+
     def build_models(self, forward_or_backward=None):
         # running network
         net_f, net_b = get_model(self.args), get_model(self.args)
@@ -229,12 +252,15 @@ class IPF_DBDSB:
                     self.update_ema('b')
                     self.ema_helpers['b'].register(sample_net_b)
 
+    def worker_init_fn(self, worker_id):
+        np.random.seed(np.random.get_state()[1][0] + worker_id + self.accelerator.process_index * self.args.num_workers)
+
     def build_dataloader(self, ds, batch_size, shuffle=True, drop_last=True, repeat=True):
-        def worker_init_fn(worker_id):
-            np.random.seed(np.random.get_state()[1][0] + worker_id + self.accelerator.process_index * self.args.num_workers)
-        dl_kwargs = {"num_workers": self.args.num_workers,
-                     "pin_memory": self.args.pin_memory,
-                     "worker_init_fn": worker_init_fn}
+        dl_kwargs = {
+            "num_workers": self.args.num_workers,
+            "pin_memory": self.args.pin_memory,
+            "worker_init_fn": self.worker_init_fn
+        }
 
         dl = DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, **dl_kwargs)
         dl = self.accelerator.prepare(dl)
@@ -339,14 +365,16 @@ class IPF_DBDSB:
         init_batch_x = init_batch[0]
         init_batch_y = init_batch[1]
 
-        if self.final_ds is not None:
-            final_batch = next(final_dl)
-            final_batch_x = final_batch[0]
-
+        if self.args.dependent_coupling == 'vae':
+            final_batch_x = self.vae_model.reconstruct(init_batch_x)
         else:
-            mean_final = mean_final.to(init_batch_x.device)
-            std_final = std_final.to(init_batch_x.device)
-            final_batch_x = mean_final + std_final * torch.randn_like(init_batch_x)
+            if self.final_ds is not None:
+                final_batch = next(final_dl)
+                final_batch_x = final_batch[0]
+            else:
+                mean_final = mean_final.to(init_batch_x.device)
+                std_final = std_final.to(init_batch_x.device)
+                final_batch_x = mean_final + std_final * torch.randn_like(init_batch_x)
 
         mean_final = mean_final.to(init_batch_x.device)
         std_final = std_final.to(init_batch_x.device)
@@ -632,6 +660,7 @@ class IPF_DBDSB:
 
             x0, x1 = x0.to(self.device), x1.to(self.device)
             x0, x1 = x0.repeat_interleave(self.num_repeat_data, dim=0), x1.repeat_interleave(self.num_repeat_data, dim=0)
+            
             x, t, out = self.langevin.get_train_tuple(x0, x1, fb=forward_or_backward, first_it=first_it)
 
             if self.cdsb:

@@ -1,0 +1,24 @@
+# @package _global_
+
+variational: True
+latent_dim : 128
+kl_weight: 1e-3
+
+vae_checkpoint_path : /store/CIA/gb511/projects/sbvae/code/experiments/mnist_MNIST_VAE/kl_weight=0.5,method=vae,num_workers=8/42/wandb/latest-run/files/vae_checkpoints/last.ckpt
+
+encoder:
+  name: simple_encoder
+  base_channel_size: 64
+  time_conditional: False
+  split_output: True
+
+decoder:
+  name: simple_decoder
+  base_channel_size: 64
+
+vae_optim:
+  lr: 1e-4
+  use_scheduler: True
+  sch_factor: 0.25
+  sch_patience: 10
+  sch_min_lr: 1e-5
