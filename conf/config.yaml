@@ -10,7 +10,9 @@ defaults:
   - vae: simple
   # - override hydra/launcher: submitit_slurm
 
+phase: train #options=[train, test]
 name: ${Dataset}_${data.dataset}
+run_name: None
 run: 0
 seed: 42
 use_default_wandb_name: False
@@ -23,10 +25,11 @@ CSV_log_dir: ./
 # training
 optimizer: Adam
 test_batch_size: 1000
-plot_level: 2
+plot_level: 1
 cache_refresh_stride: ${num_iter}
 cache_num_steps: ${num_steps}
 test_num_steps: ${num_steps}
+test_num_steps_sequence: [10, 50]
 normalize_x1: False
 
 paths: 
@@ -36,7 +39,7 @@ paths:
 # checkpoint
 autostart_next_it: False
 
-checkpoint_run: False
+checkpoint_run: False #set it to True if you want to evaluate the model.
 checkpoint_it: 1
 checkpoint_pass: b  # b or f (skip b ipf run)
 checkpoint_iter: 0

@@ -28,6 +28,7 @@ pin_memory: True
 # logging
 log_stride: 100
 gif_stride: 5000
+fid_stride: 100000
 plot_npar: 100
 test_npar: 10000
 test_batch_size: 250

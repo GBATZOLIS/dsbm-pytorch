@@ -3,15 +3,16 @@
 cdsb: False
 
 # data 
-Dataset: mnist
+Dataset: cifar10
 data:
-  dataset: "MNIST_Gaussian"
-  image_size: 28
-  channels: 1
+  dataset: "CIFAR10"
+  image_size: 32
+  channels: 3
+  random_flip: true
 
 # transfer
-transfer: False
-Dataset_transfer: emnist
+transfer: True
+Dataset_transfer: vae
 
 
 final_adaptive: False
@@ -22,30 +23,32 @@ load: True
 
 # device
 device: cuda
-num_workers: 2 
+num_workers: 4
 pin_memory: True
 
 # logging
 log_stride: 100
-gif_stride: 5000
-fid_stride: 100000
+gif_stride: 75000
+fid_stride: 150000
 plot_npar: 100
-test_npar: 10000
-test_batch_size: 250
-cache_npar: 10000
+test_npar: 50000
+test_batch_size: 1000
+cache_npar: 50000 #250000
 cache_batch_size: 1250
-num_repeat_data: 1
-cache_refresh_stride: 1000
+num_repeat_data: 1  # 4
+cache_refresh_stride: ${num_iter}
 
 # training
+optimizer: AdamW
 use_prev_net: True
 ema: True
-ema_rate: 0.999
+ema_rate: 0.9999
 grad_clipping: True
 grad_clip: 1.0
 batch_size: 128
 num_iter: 500000
-n_ipf: 50
+n_ipf: 100
 lr: 0.0001
+weight_decay: 0.01
 
-num_steps: 30
+num_steps: 200

@@ -110,29 +110,67 @@ class DBDSB_VE:
     else:
       z0, z1 = zend, zstart
     return z0, y0, z1
-
+  
   @torch.no_grad()
-  def probability_flow_ode(self, net_f=None, net_b=None, y=None):
+  def probability_flow_ode(self, net_f=None, net_b=None, y=None, calc_energy=False): #OSMOTIC DRIFT
     get_drift_fn_net = self.get_drift_fn_net
 
     class ODEfunc(nn.Module):
-      def __init__(self, net_f=None, net_b=None):
-        super().__init__()
-        self.net_f = net_f
-        self.net_b = net_b
-        self.nfe = 0
-        if self.net_f is not None:
-          self.drift_fn_f = get_drift_fn_net(self.net_f, 'f', y=y)
-        self.drift_fn_b = get_drift_fn_net(self.net_b, 'b', y=y)
+        def __init__(self, net_f=None, net_b=None):
+            super().__init__()
+            self.net_f = net_f
+            self.net_b = net_b
+            self.nfe = 0  # Number of function evaluations
+            self.calc_energy = calc_energy
+            self.recordings = []  # Initialize a list to record times and path energies
+            if self.net_f is not None:
+                self.drift_fn_f = get_drift_fn_net(self.net_f, 'f', y=y)
+            self.drift_fn_b = get_drift_fn_net(self.net_b, 'b', y=y)
 
-      def forward(self, t, x):
-        self.nfe += 1
-        t = torch.ones((x.shape[0], 1), device=x.device) * t.item()
-        if self.net_f is None:
-          return - self.drift_fn_b(t, x)
-        return (self.drift_fn_f(t, x) - self.drift_fn_b(t, x)) / 2
+        def forward(self, t, x):
+            self.nfe += 1
+            current_time = t.item()  # Get the current time as a Python float
+            t = torch.ones((x.shape[0], 1), device=x.device) * current_time
+            if self.net_f is None:
+                derivative = -self.drift_fn_b(t, x)
+            else:
+                derivative = (self.drift_fn_f(t, x) - self.drift_fn_b(t, x)) / 2
+
+            if self.calc_energy:
+                # Calculate path energy for the current derivative
+                flat_derivative = derivative.view(derivative.size(0), -1)
+                path_energy = torch.norm(flat_derivative, p=2, dim=1).mean()
+                self.recordings.append((current_time, path_energy))
+
+            return derivative
+
+        def get_recordings(self):
+            # Helper method to retrieve the recorded times and path energies
+            return self.recordings
 
     return ODEfunc(net_f=net_f, net_b=net_b)
+  
+  @torch.no_grad()
+  def get_current_drift(self, net_f=None, net_b=None, y=None): #CURRENT DRIFT ((b+)+(b-))/2
+    get_drift_fn_net = self.get_drift_fn_net
+
+    class CurrentDrift(nn.Module): 
+        def __init__(self, net_f=None, net_b=None):
+            super().__init__()
+            self.net_f = net_f
+            self.net_b = net_b
+            self.nfe = 0  # Number of function evaluations
+            self.drift_fn_f = get_drift_fn_net(self.net_f, 'f', y=y)
+            self.drift_fn_b = get_drift_fn_net(self.net_b, 'b', y=y)
+
+        def forward(self, t, x):
+            self.nfe += 1
+            current_time = t.item()  # Get the current time as a Python float
+            t = torch.ones((x.shape[0], 1), device=x.device) * current_time
+            current_drift = (self.drift_fn_f(t, x) + self.drift_fn_b(t, x)) / 2
+            return current_drift
+
+    return CurrentDrift(net_f=net_f, net_b=net_b)
 
   @torch.no_grad()
   def get_train_tuple(self, x0, x1, fb='', first_it=False):

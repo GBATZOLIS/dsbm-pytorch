@@ -1,6 +1,6 @@
 import os, sys, warnings, time
 import re
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from functools import partial
 
 import hydra
@@ -16,6 +16,7 @@ from .sde import *
 from .runners import *
 from .runners.config_getters import get_vae_model, get_model, get_optimizer, get_plotter, get_logger
 from .runners.ema import EMAHelper
+import wandb
 
 # from torchdyn.core import NeuralODE
 from torchdiffeq import odeint
@@ -108,17 +109,144 @@ class IPF_DBDSB:
 
         self.cache_num_steps = self.args.get("cache_num_steps", self.num_steps)
         self.test_num_steps = self.args.get("test_num_steps", self.num_steps)
+        self.test_num_steps_sequence = self.args.get("test_num_steps_sequence", []) #we test FID with this sequence of integrations steps
 
         self.plotter = self.get_plotter()
-
+        self.fast_plotter = self.get_plotter(fid_feature=192) #(fid_feature=192) #use this plotter when evaluating with the sequence of integration steps. Default FID computation takes time.
+        
         self.stride = self.args.gif_stride
+        self.fid_stride = self.args.fid_stride
         self.stride_log = self.args.log_stride
 
     def get_logger(self, name='logs'):
         return get_logger(self.args, name)
 
-    def get_plotter(self):
-        return get_plotter(self, self.args)
+    def get_plotter(self, fid_feature=2048):
+        return get_plotter(self, self.args, fid_feature)
+
+    def get_checkpoints(self, base_checkpoint_dir):
+        """returns a dict(-key=IMF iteration
+                          -value: dict(-key='net_x'
+                                       -value:full_path))"""
+
+        if not os.path.isdir(base_checkpoint_dir) or not os.listdir(base_checkpoint_dir):
+            raise ValueError(f"Checkpoint directory {base_checkpoint_dir} is empty or does not exist.")
+
+        
+        # Dictionary to hold the IPF iteration as key and another dict as value
+        checkpoints_dict = defaultdict(lambda: {
+            'net_f': None, 'net_b': None,
+            'optimizer_f': None, 'optimizer_b': None,
+            'sample_net_f': None, 'sample_net_b': None
+        })
+
+        # Regex pattern to match the checkpoint files and extract the first small number as IPF iteration
+        pattern = re.compile(r"(net|optimizer|sample_net)_(f|b)_([0-9]+)_\d+.ckpt")
+
+        # Walk through the directory
+        for root, dirs, files in os.walk(base_checkpoint_dir):
+            for file in files:
+                match = pattern.match(file)
+                if match:
+                    # Extract the key information
+                    checkpoint_type, fb_type, ipf_iteration = match.groups()
+                    key = f"{checkpoint_type}_{fb_type}"
+
+                    # Construct the full path to the file
+                    full_path = os.path.join(root, file)
+
+                    # Update the dictionary
+                    checkpoints_dict[int(ipf_iteration)][key] = full_path
+
+        # Convert defaultdict to a regular dict before returning
+        return dict(checkpoints_dict)
+
+    #helper for testing loop
+    def set_checkpoint_dirs(self, checkpoints, imf_iter):
+        self.checkpoint_b = checkpoints[imf_iter]['net_b']
+        self.sample_checkpoint_b = checkpoints[imf_iter]['sample_net_b']
+        self.optimizer_checkpoint_b = checkpoints[imf_iter]['optimizer_b']
+        self.checkpoint_f = checkpoints[imf_iter]['net_f']
+        self.sample_checkpoint_f = checkpoints[imf_iter]['sample_net_f']
+        self.optimizer_checkpoint_f = checkpoints[imf_iter]['optimizer_f']
+
+    def test(self,):
+        #in this file we will do extensive for the trained markovian projections
+        #1.) report FID scores at each IMF iteration
+        #2.) report average path energy -> gives a comparison of the efficiency of different bridges
+        
+        self.ckpt_dir = './checkpoints/'
+        self.ckpt_dir_load = os.path.abspath(self.ckpt_dir)
+        print(f'Checkpoint dir: {self.ckpt_dir_load}')
+
+        self.checkpoint_pass, self.step = 'b', 1
+        self.first_pass, self.resume, self.resume_f = True, True, True
+
+        checkpoints = self.get_checkpoints(self.ckpt_dir_load)
+        completed_imf_iters = sorted(checkpoints.keys())
+        print(f'completed IMF iterations based on the checkpoints: {completed_imf_iters}')
+
+        all_tsteps = []
+        all_energies = []
+        all_imf_iterations = []
+        for imf_iter in tqdm(completed_imf_iters, desc="IMF Iterations"):  # Progress bar with description
+            all_imf_iterations.append(imf_iter)
+            print(f'Testing on IMF iteration: {imf_iter}')
+            self.checkpoint_it = imf_iter
+            self.set_checkpoint_dirs(checkpoints, imf_iter)
+            self.build_models()
+            self.build_ema()
+
+            # Assuming fb and n are defined elsewhere in your class
+            num_iter = self.compute_max_iter('b', imf_iter)
+            
+            datasets=['train']
+            for num_steps in [50]: #self.test_num_steps_sequence:
+                start_time = time.time()
+                self.set_seed(seed=0 + self.accelerator.process_index)
+                metrics = self.plotter(num_iter, imf_iter, 'b', sampler='sde', datasets=datasets, num_steps=num_steps, calc_energy=True)
+                
+                tsteps_keys = [key for key in metrics.keys() if key.endswith('tsteps')]
+                energies_keys = [key for key in metrics.keys() if key.endswith('energies')]
+
+                # Assuming that there's only one key for each, get the key values
+                tsteps_key = tsteps_keys[0] if tsteps_keys else None
+                energies_key = energies_keys[0] if energies_keys else None
+
+                # Ensure that the keys have been found
+                if tsteps_key is None or energies_key is None:
+                    raise KeyError("The expected keys ending with 'tsteps' or 'energies' were not found.")
+                
+                all_tsteps.append(metrics[tsteps_key].tolist())
+                all_energies.append(metrics[energies_key].tolist())
+
+                if self.accelerator.is_main_process:
+                    # Create the energy vs time steps plot using the new keys
+                    energy_plot = wandb.plot.line_series(
+                        xs=all_tsteps,
+                        ys=all_energies,
+                        keys=all_imf_iterations,
+                        title='Path Energy (E) vs Integration Time (t)'
+                    )
+                    
+                    # Remove the raw tsteps and energies from the metrics as they are now plotted
+                    del metrics[tsteps_key]
+                    del metrics[energies_key]
+
+                    # Prepare the dictionary to be logged
+                    metrics_to_log = {
+                        'energy_plot': energy_plot,
+                        **metrics  # This unpacks the rest of the metrics into the dictionary
+                    }
+
+                    # Log the metrics and plot to wandb
+                    self.save_logger.log_metrics(metrics_to_log, step=imf_iter)
+                
+                end_time = time.time()
+                print(f"Integration steps:{num_steps} takes {end_time - start_time} seconds to execute")
+            
+                #if self.accelerator.is_main_process:
+                #    self.save_logger.log_metrics(metrics, step=imf_iter)
 
     def build_checkpoints(self):
         self.first_pass = True  # Load and use checkpointed networks during first pass
@@ -357,7 +485,7 @@ class IPF_DBDSB:
                 self.ipf_iter('b', n)
                 self.ipf_iter('f', n)
 
-    def sample_batch(self, init_dl, final_dl):
+    def sample_batch(self, init_dl, final_dl, phase='train'):
         mean_final = self.mean_final
         std_final = self.std_final
 
@@ -366,7 +494,21 @@ class IPF_DBDSB:
         init_batch_y = init_batch[1]
 
         if self.args.dependent_coupling == 'vae':
-            final_batch_x = self.vae_model.reconstruct(init_batch_x)
+            kl_weight_tensor = torch.tensor(self.args.kl_weight, device=self.device)
+            if phase == 'train':
+                mean_z, log_var_z = self.vae_model.encode(init_batch_x)
+                z = torch.randn_like(mean_z, device=self.device) * torch.sqrt(log_var_z.exp()) + mean_z
+                mean_x, _ = self.vae_model.decode(z)
+                if self.args.decoding == 'stochastic':
+                    final_batch_x = mean_x + torch.sqrt(kl_weight_tensor)*torch.randn_like(mean_x, device=self.device)
+                elif self.args.decoding == 'deterministic':
+                    final_batch_x = mean_x
+            elif phase == 'test':
+                mean_x = self.vae_model.sample(init_batch_x.size(0))
+                if self.args.decoding == 'stochastic':
+                    final_batch_x = mean_x + torch.sqrt(kl_weight_tensor)*torch.randn_like(mean_x, device=self.device)
+                elif self.args.decoding == 'deterministic':
+                    final_batch_x = mean_x
         else:
             if self.final_ds is not None:
                 final_batch = next(final_dl)
@@ -385,24 +527,107 @@ class IPF_DBDSB:
 
         return init_batch_x, init_batch_y, final_batch_x, mean_final, var_final
 
-    def backward_sample(self, final_batch_x, y_c, permute=True, num_steps=None):
-        sample_net = self.get_sample_net('b')
+    def prepare_sampling_fn(self, fb):
+        sample_net = self.get_sample_net(fb)
         sample_net.eval()
-        sample_fn = partial(self.apply_net, net=sample_net, fb="b")
+        sample_fn = partial(self.apply_net, net=sample_net, fb=fb)
+        return sample_fn
+
+    def backward_sample(self, final_batch_x, y_c, permute=True, num_steps=None, calc_energy=False):
+        sample_fn = self.prepare_sampling_fn('b')
 
         with torch.no_grad():
             # self.set_seed(seed=0 + self.accelerator.process_index)
             final_batch_x = final_batch_x.to(self.device)
             if self.cdsb:
                 y_c = y_c.expand(final_batch_x.shape[0], *self.shape_y).clone().to(self.device)
-            x_tot_c, _, _, _ = self.langevin.record_langevin_seq(sample_fn, final_batch_x, y_c, 'b', sample=True, num_steps=num_steps)
+            x_tot_c, _, _, steps_expanded = self.langevin.record_langevin_seq(sample_fn, final_batch_x, y_c, 'b', sample=True, num_steps=num_steps)
 
             if permute:
                 x_tot_c = x_tot_c.permute(1, 0, *list(range(2, len(x_tot_c.shape))))  # (num_steps, num_samples, *shape_x)
 
-        return x_tot_c, self.num_steps if num_steps is None else num_steps
+        if calc_energy:
+            f_sample_fn = self.prepare_sampling_fn('f')
+            current_drift = self.langevin.probability_flow_ode(net_f=f_sample_fn, net_b=sample_fn)
+            tsteps = steps_expanded[0,:,0]
+            #print(x_tot_c.size())
+            #print(tsteps.size())
+            c_drift_L2 = torch.ones(size=(tsteps.size(0), )).to(self.device)
+            for i in range(tsteps.size(0)):
+                c_drift = current_drift(tsteps[i], x_tot_c[:,i,::]) #current drift for tsteps[i]
+                c_drift_flat = c_drift.view(c_drift.size(0), -1)
+                energy = torch.square(torch.norm(c_drift_flat, p=2, dim=1)).mean()
+                c_drift_L2[i] = energy
+            
+            return x_tot_c, self.num_steps if num_steps is None else num_steps, tsteps, c_drift_L2
+        else:
+            return x_tot_c, self.num_steps if num_steps is None else num_steps, [], []
 
-    def backward_sample_ode(self, final_batch_x, y_c, permute=True):
+    def backward_sample_ode_under_testing(self, final_batch_x, y_c, permute=True, num_steps='default', method='odeint', calc_energy=False):
+        if num_steps=='default':
+            num_steps = self.num_steps
+
+        sample_net_b = self.get_sample_net('b')
+        sample_net_b.eval()
+        sample_fn_b = partial(self.apply_net, net=sample_net_b, fb="b")
+        
+        try:
+            sample_net_f = self.get_sample_net('f')
+            sample_net_f.eval()
+            sample_fn_f = partial(self.apply_net, net=sample_net_f, fb="f")
+        except KeyError:
+            sample_fn_f = None
+
+        if self.cdsb:
+            y_c = y_c.expand(final_batch_x.shape[0], *self.shape_y).clone().to(self.device)
+
+        node_drift = self.langevin.probability_flow_ode(net_f=sample_fn_f, net_b=sample_fn_b, y=y_c, calc_energy=calc_energy)
+
+        def euler_int(drift_func, initial_state, time_points):
+            num_steps = len(time_points) - 1
+            trajectory = torch.zeros(num_steps + 1, *initial_state.shape, device=self.device)
+            trajectory[0] = initial_state
+            for i in range(num_steps):
+                dt = time_points[i + 1] - time_points[i]
+                #print(time_points[i])
+                derivative = drift_func(time_points[i], trajectory[i])
+                trajectory[i + 1] = trajectory[i] + derivative * dt
+
+            return trajectory
+
+        with torch.no_grad():
+            final_batch_x = final_batch_x.to(self.device)
+            node_drift.nfe = 0  # Number of function evaluations
+            rtol = atol = self.args.get("ode_tol", 1e-5)
+            time_points = torch.linspace(self.langevin.T, 0, num_steps + 1).to(self.device)
+
+            # Choose the integration method
+            if method == 'eulerint':
+                x_tot_c = euler_int(node_drift, final_batch_x, time_points)
+                x_tot_c = x_tot_c[1:]  # Discard the initial condition
+            elif method == 'odeint':
+                ode_sampler = self.args.get("ode_sampler", 'euler')
+                step_size = self.args.get("ode_euler_step_size", (time_points[0]-time_points[1]).item())
+                x_tot_c = odeint(node_drift, final_batch_x, time_points, method=ode_sampler, rtol=rtol, atol=atol, options={'step_size': step_size})[1:]
+            else:
+                raise ValueError(f"Invalid integration method '{method}' specified.")
+
+            if not permute:
+                # Rearrange dimensions if needed -> (batch, timesteps, *shape[2:])
+                x_tot_c = x_tot_c.permute(1, 0, *range(2, x_tot_c.ndim))  
+
+        recordings = node_drift.get_recordings()
+        time_steps_list, mean_path_energies_list = (torch.tensor(t) for t in zip(*recordings)) if recordings else ([], [])
+        #print(time_steps_list)
+        #print(mean_path_energies_list)
+        
+        return x_tot_c, node_drift.nfe, time_steps_list, mean_path_energies_list
+
+
+    def backward_sample_ode(self, final_batch_x, y_c, permute=True, num_steps='default'):
+        if num_steps=='default':
+            num_steps = self.num_steps
+
         sample_net_b = self.get_sample_net('b')
         sample_net_b.eval()
         sample_fn_b = partial(self.apply_net, net=sample_net_b, fb="b")
@@ -420,9 +645,14 @@ class IPF_DBDSB:
         with torch.no_grad():
             final_batch_x = final_batch_x.to(self.device)
             node_drift.nfe = 0
-            rtol = atol = self.args.ode_tol
-            x_tot_c = odeint(node_drift, final_batch_x, t=torch.linspace(self.langevin.T, 0, self.num_steps+1).to(self.device),
-                             method=self.args.ode_sampler, rtol=rtol, atol=atol, options={'step_size': self.args.ode_euler_step_size})[1:]
+            rtol = self.args.get("ode_rtol", 1e-7)
+            atol = self.args.get("ode_atol", 1e-9)
+            ode_sampler = self.args.get("ode_sampler", 'euler')
+            time_points = torch.linspace(self.langevin.T, 0, num_steps+1).to(self.device)
+            suggested_stepsize = (time_points[0]-time_points[1]).item()/2
+            euler_step_size = self.args.get("ode_euler_step_size", suggested_stepsize)
+            x_tot_c = odeint(node_drift, final_batch_x, t=time_points,
+                             method=ode_sampler, rtol=rtol, atol=atol, options={'step_size': euler_step_size})[1:]
 
             if not permute:
                 x_tot_c = x_tot_c.permute(1, 0, *list(range(2, len(x_tot_c.shape))))  # (num_samples, num_steps, *shape_x)
@@ -479,9 +709,13 @@ class IPF_DBDSB:
 
     #     return x_tot, node_drift.nfe
 
-    def plot_and_test_step(self, i, n, fb, sampler=None):
+    def plot_and_test_step(self, i, n, fb, sampler=None, num_steps='default', plotter='default'):
         self.set_seed(seed=0 + self.accelerator.process_index)
-        test_metrics = self.plotter(i, n, fb, sampler='sde' if sampler is None else sampler)
+
+        if plotter == 'fast':
+            test_metrics = self.fast_plotter(i, n, fb, sampler='sde' if sampler is None else sampler, datasets=['train'], num_steps=num_steps)
+        else:
+            test_metrics = self.plotter(i, n, fb, sampler='sde' if sampler is None else sampler, datasets=['train'], num_steps=num_steps)
 
         if self.accelerator.is_main_process:
             self.save_logger.log_metrics(test_metrics, step=self.compute_current_step(i, n))
@@ -516,8 +750,18 @@ class IPF_DBDSB:
         num_iter = self.compute_max_iter(fb, n)
 
         if i % self.stride == 0 or i == num_iter:
-            self.save_ckpt(i, n, fb)
-            self.plot_and_test_step(i, n, fb)
+            #self.save_ckpt(i, n, fb)
+
+            #this is only appplied when fb=b
+            if fb == 'b':
+                for num_steps in self.test_num_steps_sequence:
+                    self.plot_and_test_step(i, n, fb, num_steps=num_steps)
+
+            #start_time = time.time()
+            #self.plot_and_test_step(i, n, fb, plotter='fast') #the default value
+            #end_time = time.time()
+            #print(f"Default integration steps:{self.num_steps} takes {end_time - start_time} seconds to execute")
+            
     
     def save_ckpt(self, i, n, fb):
         if self.accelerator.is_main_process:
@@ -702,6 +946,9 @@ class IPF_DBDSB:
 
             if i != num_iter:
                 self.save_step(i, n, forward_or_backward)
+            
+            if self.compute_current_step(i, n) % self.fid_stride == 0 and forward_or_backward=='b': #calculate the default FID every self.fid_stride backward steps.
+                self.plot_and_test_step(i, n, forward_or_backward, plotter='default')
 
         # Pre-cache current iter at end of training
         new_dl = None

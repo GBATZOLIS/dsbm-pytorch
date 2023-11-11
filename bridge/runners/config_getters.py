@@ -25,10 +25,10 @@ def worker_init_fn(worker_id):
     torch.cuda.manual_seed_all(worker_id)
 
 
-def get_plotter(runner, args):
+def get_plotter(runner, args, fid_feature=2048):
     dataset_tag = getattr(args, DATASET)
     if dataset_tag in [DATASET_MNIST, DATASET_EMNIST, DATASET_CIFAR10]:
-        return ImPlotter(runner, args)
+        return ImPlotter(runner, args, fid_feature=fid_feature)
     elif dataset_tag in [DATASET_DOWNSCALER_LOW, DATASET_DOWNSCALER_HIGH]:
         return DownscalerPlotter(runner, args)
     else:
@@ -54,7 +54,11 @@ def get_model(args):
 
         if args.model.channel_mult is not None:
             channel_mult = args.model.channel_mult
+            # Check if channel_mult is already a tuple
+            if not isinstance(channel_mult, tuple):
+                channel_mult=tuple(channel_mult)
         else:
+            #default channel multipliers for fixed resolutions
             if image_size == 256:
                 channel_mult = (1, 1, 2, 2, 4, 4)
             elif image_size == 160:
@@ -454,16 +458,16 @@ def get_valid_test_datasets(args):
         valid_ds = None
         test_ds = torchvision.datasets.MNIST(root=root, train=False, transform=cmp(test_transform), download=True)
     
-    # # CIFAR10 DATASET
-    # if dataset_tag == DATASET_CIFAR10:
-    #     # data_tag = args.data.dataset
-    #     root = os.path.join(data_dir, 'cifar10')
-    #     load = args.load
-    #     assert args.data.channels == 3
-    #     assert args.data.image_size == 32
-    #     test_transform = [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
-    #     valid_ds = None
-    #     test_ds = torchvision.datasets.CIFAR10(root=root, train=False, transform=cmp(test_transform), download=True)
+    # CIFAR10 DATASET
+    if dataset_tag == DATASET_CIFAR10:
+        # data_tag = args.data.dataset
+        root = os.path.join(data_dir, 'cifar10')
+        load = args.load
+        assert args.data.channels == 3
+        assert args.data.image_size == 32
+        test_transform = [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
+        valid_ds = None
+        test_ds = torchvision.datasets.CIFAR10(root=root, train=False, transform=transforms.Compose(test_transform), download=True)
 
     return valid_ds, test_ds
 
@@ -477,7 +481,7 @@ WANDB_TAG = 'Wandb'
 NOLOG_TAG = 'NONE'
 
 
-def get_logger(args, name, run_name=None):
+def get_logger(args, name, project_name=None):
     logger_tag = getattr(args, LOGGER)
 
     if logger_tag == CSV_TAG:
@@ -486,13 +490,16 @@ def get_logger(args, name, run_name=None):
 
     if logger_tag == WANDB_TAG:
         log_dir = os.getcwd()
-        if run_name is None:
+        
+        if args.run_name is None:
             if not args.use_default_wandb_name:
                 run_name = os.path.normpath(os.path.relpath(log_dir, os.path.join(
                     hydra.utils.to_absolute_path(args.paths.experiments_dir_name), args.name))).replace("\\", "/")
             else:
                 run_name = None
-
+        else:
+            run_name = args.run_name
+        
         data_tag = args.data.dataset
         config = OmegaConf.to_container(args, resolve=True)
 
@@ -503,7 +510,10 @@ def get_logger(args, name, run_name=None):
 
         assert len(wandb_entity) > 0, "WANDB_ENTITY not set"
 
-        kwargs = {'name': run_name, 'project': 'dsbm_' + args.name, 'prefix': name, 'entity': wandb_entity,
+        if project_name is None:
+            project_name = 'dsbm_' + args.name
+
+        kwargs = {'name': run_name, 'project': project_name, 'prefix': name, 'entity': wandb_entity,
                   'tags': [data_tag], 'config': config, 'id': str(args.wandb_id) if args.wandb_id is not None else None}
         return WandbLogger(**kwargs)
 
