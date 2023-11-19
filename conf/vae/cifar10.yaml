@@ -3,7 +3,7 @@
 
 variational: True
 latent_dim : 384
-kl_weight: 0.23 #if you set decoding to stochastic, make sure to set the training kl_weight correctly. This is the beta value of the β-VAE.
+kl_weight: 0.01 #0.23 #if you set decoding to stochastic, make sure to set the training kl_weight correctly. This is the beta value of the β-VAE.
 tuning_gpus: [0] #gpus used for tuning the kl_weight using the parallel optuna study.
 kl_weight_min: 1e-4
 kl_weight_max: 1
@@ -13,7 +13,7 @@ tuning_fid_feature: 2048
 decoding: deterministic
 
 
-vae_checkpoint_path : /store/CIA/gb511/projects/sbvae/code/experiments/cifar10_vae_tuning/kl_0.23/42/wandb/latest-run/files/vae_checkpoints/epoch=381--val_loss=18.548.ckpt
+vae_checkpoint_path : /store/CIA/gb511/projects/sbvae/code/experiments/cifar10_vae_tuning/kl_0.01/42/wandb/latest-run/files/vae_checkpoints/epoch=1377--val_loss=8.380.ckpt #/store/CIA/gb511/projects/sbvae/code/experiments/cifar10_vae_tuning/kl_0.23/42/wandb/latest-run/files/vae_checkpoints/epoch=381--val_loss=18.548.ckpt
 
 encoder:
   name: simple_encoder

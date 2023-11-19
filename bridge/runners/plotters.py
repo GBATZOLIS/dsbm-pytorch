@@ -92,7 +92,8 @@ class Plotter(object):
                 y_start, x_init = [], []
 
             else:
-                if fb == 'b' or (self.ipf.transfer and dl_name == 'train'):
+                fbs = ['b', 'f'] if self.args.space == 'latent' else ['b']
+                if fb in fbs and dl_name == 'train':
                     generate_npar = self.ipf.test_npar
                 else:
                     generate_npar = min(self.ipf.test_npar, self.ipf.plot_npar)
@@ -115,16 +116,18 @@ class Plotter(object):
                 x_last = x_tot[-1]
 
             x_tot = None
-            test_results = self.test_joint(x_start[:self.ipf.test_npar], y_start[:self.ipf.test_npar], 
-                                           x_last[:self.ipf.test_npar], x_init[:self.ipf.test_npar],
-                                           i, n, fb, dl_name=dl_name, sampler=sampler,
-                                           mean_final=mean_final, var_final=var_final)
-            
-            metric_results = {self.prefix_fn(dl_name, sampler, num_steps) + k: v for k, v in metric_results.items()}
-            test_results = {self.prefix_fn(dl_name, sampler, num_steps) + k: v for k, v in test_results.items()}
 
+            if generate_npar == self.ipf.test_npar:
+                test_results = self.test_joint(x_start[:generate_npar], y_start[:generate_npar], 
+                                            x_last[:generate_npar], x_init[:generate_npar],
+                                            i, n, fb, dl_name=dl_name, sampler=sampler,
+                                            mean_final=mean_final, var_final=var_final)
+                test_results = {self.prefix_fn(dl_name, sampler, num_steps) + k: v for k, v in test_results.items()}
+                out.update(test_results)
+
+            metric_results = {self.prefix_fn(dl_name, sampler, num_steps) + k: v for k, v in metric_results.items()}
             out.update(metric_results)
-            out.update(test_results)
+            
 
         torch.cuda.empty_cache()
         return out
@@ -189,7 +192,7 @@ class Plotter(object):
             try:
                 start = time.time()
 
-                init_batch_x, batch_y, final_batch_x, mean_final, var_final = self.ipf.sample_batch(iter_dl, self.ipf.save_final_dl_repeat, phase='test')
+                init_batch_x, batch_y, final_batch_x, mean_final, var_final = self.ipf.sample_batch(iter_dl, self.ipf.save_final_dl_repeat) #, phase='test')
 
                 with torch.no_grad():
                     if fb == 'f':
@@ -366,6 +369,41 @@ class Plotter(object):
     def save_image(self, tensor, name, dir, **kwargs):
         return []
 
+class LatentPlotter(Plotter):
+    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif'):
+        super().__init__(ipf, args, im_dir=im_dir, gif_dir=gif_dir)
+    
+    def matrix_sqrt(self, mat):
+        U, S, V = torch.svd(mat)
+        return U @ torch.diag(torch.sqrt(S)) @ V.t()
+
+    def compute_wasserstein_distance(self, mean1, cov1, mean2, cov2):
+        diff_mean = mean1 - mean2
+        sqrt_cov1 = self.matrix_sqrt(cov1)
+        sqrt_cov2 = self.matrix_sqrt(cov2)
+        term1 = torch.norm(diff_mean, p=2)
+        term2 = torch.trace(cov1 + cov2 - 2 * self.matrix_sqrt(sqrt_cov1 @ cov2 @ sqrt_cov1))
+        w2_distance = term1 + term2
+        return w2_distance.item()
+
+    def test_joint(self, x_start, y_start, x_last, x_init, i, n, fb, dl_name='train', sampler='sde', mean_final=None, var_final=None):
+        out = {}
+
+        mean_x_last = torch.mean(x_last, dim=0)
+        cov_x_last = torch.cov(x_last.t())
+
+        if fb == 'b':
+            # Wasserstein-2 distance between x_last and x_init
+            mean_x_init = torch.mean(x_init, dim=0)
+            cov_x_init = torch.cov(x_init.t())
+        elif fb == 'f':
+            # Wasserstein-2 distance between x_last and N(0, I)
+            latent_dim = x_last.size(1)
+            mean_x_init = torch.zeros(latent_dim)
+            cov_x_init = torch.eye(latent_dim)
+
+        out['wasserstein_distance'] = self.compute_wasserstein_distance(mean_x_last, cov_x_last, mean_x_init, cov_x_init)
+        return out
 
 class ImPlotter(Plotter):
 
@@ -397,9 +435,11 @@ class ImPlotter(Plotter):
                             mean_final=None, var_final=None, num_steps='default'):
         super().plot_sequence_joint(x_start, y_start, x_tot, x_init, data, i, n, fb, freq=freq, dl_name=dl_name, sampler=sampler,
                                     mean_final=mean_final, var_final=var_final, num_steps=num_steps)
-        num_steps = x_tot.shape[0]
+        #num_steps = x_tot.shape[0]
+
         if freq is None:
-            freq = num_steps // min(num_steps, 50)
+            f_num_steps = x_tot.shape[0]
+            freq = f_num_steps // min(f_num_steps, 50)
 
         if self.plot_level >= 1:
             x_tot_grid = x_tot[:, :self.num_plots_grid]

@@ -4,11 +4,14 @@ job:
   config:
     # configuration for the ${hydra.job.override_dirname} runtime variable
     override_dirname:
-      exclude_keys: [phase, name, launcher, run, training, device, data, data_dir, dataset, load, Dataset, data.dataset, test_batch_size, y_cond, x_cond_true, LOGGER, plot_npar, paths.data_dir_name, seed, autostart_next_it, checkpoint_run]
+      exclude_keys: [first_num_iter, num_iter, num_steps, ema_rate, validation_stride, gif_stride, test_num_steps_sequence, \
+                      phase, name, launcher, run, training, device, data, data_dir, dataset, load, Dataset, data.dataset, \
+                      test_batch_size, y_cond, x_cond_true, LOGGER, plot_npar, paths.data_dir_name, seed, \
+                      autostart_next_it, checkpoint_run]
 
 run:
   # Output directory for normal runs
-  dir: ./${paths.experiments_dir_name}/${name}/${hydra.job.override_dirname}/${seed}
+  dir: ./${paths.experiments_dir_name}/${name}/${run_name}
 
 sweep:
   # Output directory for sweep runs

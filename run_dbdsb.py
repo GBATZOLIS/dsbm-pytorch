@@ -12,7 +12,7 @@ def run(args):
     accelerator.print('Directory: ' + os.getcwd())
 
     init_ds, final_ds, mean_final, var_final = get_datasets(args, device=accelerator.device)
-    valid_ds, test_ds = get_valid_test_datasets(args)
+    valid_ds, test_ds = get_valid_test_datasets(args, device=accelerator.device)
 
     final_cond_model = None
     ipf = IPF_DBDSB(init_ds, final_ds, mean_final, var_final, args, accelerator=accelerator,

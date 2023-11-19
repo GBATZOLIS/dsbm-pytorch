@@ -1,4 +1,5 @@
 import os, sys, warnings, time
+import shutil
 import re
 from collections import OrderedDict, defaultdict
 from functools import partial
@@ -7,7 +8,7 @@ import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 import glob
 
@@ -17,6 +18,8 @@ from .runners import *
 from .runners.config_getters import get_vae_model, get_model, get_optimizer, get_plotter, get_logger
 from .runners.ema import EMAHelper
 import wandb
+from math import ceil
+
 
 # from torchdyn.core import NeuralODE
 from torchdiffeq import odeint
@@ -68,12 +71,16 @@ class IPF_DBDSB:
                 self.gammas = np.linspace(self.args.gamma_min, self.args.gamma_max, self.num_steps)
             elif self.args.gamma_space == 'geomspace':
                 self.gammas = np.geomspace(self.args.gamma_min, self.args.gamma_max, self.num_steps)
-        self.gammas = torch.tensor(self.gammas).to(self.device).float()
+        self.gammas = torch.tensor(self.gammas).to(self.device).float() #σ_t**2
         self.T = torch.sum(self.gammas)
         self.accelerator.print("T:", self.T.item())
         self.sigma = torch.sqrt(self.T).item()
         self.timesteps = self.gammas / self.T
 
+        # get loggers
+        self.logger = self.get_logger('train_logs')
+        self.save_logger = self.get_logger('test_logs')
+        
         # run from checkpoint
         self.build_checkpoints()
         
@@ -81,15 +88,11 @@ class IPF_DBDSB:
         self.build_models()
         self.build_ema()
 
-        if args.dependent_coupling=='vae':
+        if args.dependent_coupling == 'vae':
             self.vae_model = self.build_vae_model(args)
 
         # get optims
         self.build_optimizers()
-
-        # get loggers
-        self.logger = self.get_logger('train_logs')
-        self.save_logger = self.get_logger('test_logs')
 
         # get data
         self.build_dataloaders()
@@ -117,6 +120,7 @@ class IPF_DBDSB:
         self.stride = self.args.gif_stride
         self.fid_stride = self.args.fid_stride
         self.stride_log = self.args.log_stride
+        self.validation_stride = getattr(self.args, 'validation_stride', 10000)
 
     def get_logger(self, name='logs'):
         return get_logger(self.args, name)
@@ -125,41 +129,32 @@ class IPF_DBDSB:
         return get_plotter(self, self.args, fid_feature)
 
     def get_checkpoints(self, base_checkpoint_dir):
-        """returns a dict(-key=IMF iteration
-                          -value: dict(-key='net_x'
-                                       -value:full_path))"""
-
         if not os.path.isdir(base_checkpoint_dir) or not os.listdir(base_checkpoint_dir):
             raise ValueError(f"Checkpoint directory {base_checkpoint_dir} is empty or does not exist.")
 
-        
-        # Dictionary to hold the IPF iteration as key and another dict as value
         checkpoints_dict = defaultdict(lambda: {
             'net_f': None, 'net_b': None,
             'optimizer_f': None, 'optimizer_b': None,
             'sample_net_f': None, 'sample_net_b': None
         })
 
-        # Regex pattern to match the checkpoint files and extract the first small number as IPF iteration
         pattern = re.compile(r"(net|optimizer|sample_net)_(f|b)_([0-9]+)_\d+.ckpt")
 
-        # Walk through the directory
         for root, dirs, files in os.walk(base_checkpoint_dir):
+            # Skip the 'last' subdirectory
+            if 'last' in root:
+                continue
+
             for file in files:
                 match = pattern.match(file)
                 if match:
-                    # Extract the key information
                     checkpoint_type, fb_type, ipf_iteration = match.groups()
                     key = f"{checkpoint_type}_{fb_type}"
-
-                    # Construct the full path to the file
                     full_path = os.path.join(root, file)
-
-                    # Update the dictionary
                     checkpoints_dict[int(ipf_iteration)][key] = full_path
 
-        # Convert defaultdict to a regular dict before returning
         return dict(checkpoints_dict)
+
 
     #helper for testing loop
     def set_checkpoint_dirs(self, checkpoints, imf_iter):
@@ -278,6 +273,7 @@ class IPF_DBDSB:
             ckpt_dir_load_list = os.path.normpath(self.ckpt_dir_load).split(os.sep)
             if 'test' in ckpt_dir_load_list:
                 self.ckpt_dir_load = os.path.join(os.sep, *ckpt_dir_load_list[:ckpt_dir_load_list.index('test')], "checkpoints/")
+            
             self.resume, self.checkpoint_it, self.checkpoint_pass, self.step, ckpt_b_suffix, ckpt_f_suffix = self.find_last_ckpt()
 
             self.resume_f = False
@@ -365,6 +361,8 @@ class IPF_DBDSB:
 
             if self.first_pass and self.resume:
                 # sample network
+                #print(self.args.model.inter_layer_widths)
+                #print(self.args.latent_dim)
                 sample_net_f, sample_net_b = get_model(self.args), get_model(self.args)
 
                 if self.resume_f:
@@ -374,11 +372,25 @@ class IPF_DBDSB:
                     self.update_ema('f')
                     self.ema_helpers['f'].register(sample_net_f)
                 if self.resume:
-                    sample_net_b.load_state_dict(
-                        torch.load(self.sample_checkpoint_b))
+                    checkpoint_state_dict = torch.load(self.sample_checkpoint_b)
+                    # Print the first 10 keys from the checkpoint state dict
+                    print("Checkpoint State Dict Keys (first 10):")
+                    print(list(checkpoint_state_dict.keys()))
+
+                    # Assuming sample_net_b has been loaded with the checkpoint state dict
+                    model_state_dict = sample_net_b.state_dict()
+                    # Print the first 10 keys from the model's state dict
+                    print("Model State Dict Keys (first 10):")
+                    print(list(model_state_dict.keys()))
+
+                    sample_net_b.load_state_dict(checkpoint_state_dict)
                     sample_net_b = sample_net_b.to(self.device)
                     self.update_ema('b')
                     self.ema_helpers['b'].register(sample_net_b)
+
+                    
+
+                    
 
     def worker_init_fn(self, worker_id):
         np.random.seed(np.random.get_state()[1][0] + worker_id + self.accelerator.process_index * self.args.num_workers)
@@ -410,6 +422,10 @@ class IPF_DBDSB:
         self.save_dls_dict = {"train": self.save_init_dl}
 
         if self.valid_ds is not None:
+            self.val_batch_size = self.batch_size // self.num_repeat_data
+            self.val_total_batches = ceil(len(self.valid_ds) / self.val_batch_size)
+            self.valid_dl = self.build_dataloader(self.valid_ds, batch_size=self.val_batch_size, shuffle=False)
+
             self.save_valid_dl = self.build_dataloader(self.valid_ds, batch_size=self.test_batch_size, shuffle=False, repeat=False)
             self.save_dls_dict["valid"] = self.save_valid_dl
 
@@ -433,9 +449,21 @@ class IPF_DBDSB:
         batch = next(self.cache_init_dl)
         batch_x = batch[0]
         batch_y = batch[1]
+
         shape_x = batch_x[0].shape
-        shape_y = batch_y[0].shape
         self.shape_x = shape_x
+
+        if isinstance(batch_y, list):
+            if not batch_y:  # Check if the list is empty
+                shape_y = ()
+            else:
+                shape_y = batch_y[0].shape
+        elif torch.is_tensor(batch_y):
+            if batch_y.nelement() == 0:  # Check if the tensor is empty
+                shape_y = ()
+            else:
+                shape_y = batch_y.shape
+
         self.shape_y = shape_y
 
     def get_sample_net(self, fb):
@@ -473,6 +501,8 @@ class IPF_DBDSB:
         if build_dataloader:
             new_dl = self.build_dataloader(new_ds, batch_size=self.batch_size // self.num_repeat_data)
             return new_dl
+        else:
+            return new_ds
 
     def train(self):
         for n in range(self.checkpoint_it, self.n_ipf + 1):
@@ -709,13 +739,13 @@ class IPF_DBDSB:
 
     #     return x_tot, node_drift.nfe
 
-    def plot_and_test_step(self, i, n, fb, sampler=None, num_steps='default', plotter='default'):
+    def plot_and_test_step(self, i, n, fb, sampler=None, datasets=['all'], num_steps='default', plotter='default'):
         self.set_seed(seed=0 + self.accelerator.process_index)
 
         if plotter == 'fast':
-            test_metrics = self.fast_plotter(i, n, fb, sampler='sde' if sampler is None else sampler, datasets=['train'], num_steps=num_steps)
+            test_metrics = self.fast_plotter(i, n, fb, sampler='sde' if sampler is None else sampler, datasets=datasets, num_steps=num_steps)
         else:
-            test_metrics = self.plotter(i, n, fb, sampler='sde' if sampler is None else sampler, datasets=['train'], num_steps=num_steps)
+            test_metrics = self.plotter(i, n, fb, sampler='sde' if sampler is None else sampler, datasets=datasets, num_steps=num_steps)
 
         if self.accelerator.is_main_process:
             self.save_logger.log_metrics(test_metrics, step=self.compute_current_step(i, n))
@@ -750,19 +780,63 @@ class IPF_DBDSB:
         num_iter = self.compute_max_iter(fb, n)
 
         if i % self.stride == 0 or i == num_iter:
-            #self.save_ckpt(i, n, fb)
+            self.save_last_ckpt(i, n, fb)
 
             #this is only appplied when fb=b
-            if fb == 'b':
-                for num_steps in self.test_num_steps_sequence:
-                    self.plot_and_test_step(i, n, fb, num_steps=num_steps)
+            if self.args.space == 'observation':
+                fbs = ['b']
+            elif self.args.space == 'latent':
+                fbs = ['b', 'f']
 
-            #start_time = time.time()
-            #self.plot_and_test_step(i, n, fb, plotter='fast') #the default value
-            #end_time = time.time()
-            #print(f"Default integration steps:{self.num_steps} takes {end_time - start_time} seconds to execute")
-            
+            if fb in fbs:
+                for num_steps in self.test_num_steps_sequence:
+                    self.plot_and_test_step(i, n, fb, datasets=['train'], num_steps=num_steps)
     
+    def save_last_ckpt(self, i, n, fb):  # fb is either 'b' or 'f'
+        last_ckpt_dir = os.path.join(self.ckpt_dir, 'last')
+        if not os.path.exists(last_ckpt_dir):
+            os.makedirs(last_ckpt_dir)
+
+        if self.accelerator.is_main_process:
+            # Define the new checkpoint names
+            name_net = f'net_{fb}_{n:03}_{i:07}.ckpt'
+            name_net_ckpt = os.path.join(last_ckpt_dir, name_net)
+            name_opt = f'optimizer_{fb}_{n:03}_{i:07}.ckpt'
+            name_opt_ckpt = os.path.join(last_ckpt_dir, name_opt)
+
+            # Delete the previous checkpoint if it exists
+            last_net_attr = f'last_saved_{fb}_net'
+            last_opt_attr = f'last_saved_{fb}_opt'
+            if hasattr(self, last_net_attr) and os.path.exists(getattr(self, last_net_attr)):
+                os.remove(getattr(self, last_net_attr))
+            if hasattr(self, last_opt_attr) and os.path.exists(getattr(self, last_opt_attr)):
+                os.remove(getattr(self, last_opt_attr))
+
+            # Save the new checkpoints
+            torch.save(self.accelerator.unwrap_model(self.net[fb]).state_dict(), name_net_ckpt)
+            torch.save(self.optimizer[fb].optimizer.state_dict(), name_opt_ckpt)
+
+            # Update the last saved checkpoint names
+            setattr(self, last_net_attr, name_net_ckpt)
+            setattr(self, last_opt_attr, name_opt_ckpt)
+
+            # Handle EMA model saving
+            if self.args.ema:
+                sample_net = self.ema_helpers[fb].ema_copy(self.accelerator.unwrap_model(self.net[fb]))
+                name_net = f'sample_net_{fb}_{n:03}_{i:07}.ckpt'
+                name_net_ema_ckpt = os.path.join(last_ckpt_dir, name_net)
+
+                last_net_ema_attr = f'last_saved_{fb}_net_ema'
+                if hasattr(self, last_net_ema_attr) and os.path.exists(getattr(self, last_net_ema_attr)):
+                    os.remove(getattr(self, last_net_ema_attr))
+
+                torch.save(sample_net.state_dict(), name_net_ema_ckpt)
+
+                # Update the last saved EMA checkpoint name
+                setattr(self, last_net_ema_attr, name_net_ema_ckpt)
+
+
+
     def save_ckpt(self, i, n, fb):
         if self.accelerator.is_main_process:
             name_net = f'net_{fb}_{n:03}_{i:07}.ckpt'
@@ -786,12 +860,39 @@ class IPF_DBDSB:
     def save_current_ckpt(self):
         self.save_ckpt(self.i, self.n, self.fb)
     
+    def copy_last_ckpt_files(self): #copy last checkpoint to the main checkpoints folder.
+        # Source directory
+        last_ckpt_dir = os.path.join(self.ckpt_dir_load, 'last')
+
+        # Ensure the source directory exists
+        if os.path.exists(last_ckpt_dir):
+            # Iterate over all files in the source directory
+            for file_name in os.listdir(last_ckpt_dir):
+                if file_name.endswith('.ckpt'):
+                    # Full path of the source and destination files
+                    src_file = os.path.join(last_ckpt_dir, file_name)
+                    dst_file = os.path.join(self.ckpt_dir_load, file_name)
+
+                    # Copy each file to the destination directory
+                    shutil.copy2(src_file, dst_file)
+                    print(f"Copied {file_name} to {self.ckpt_dir_load}")
+
+            print("All .ckpt files have been copied.")
+        else:
+            print('The directory for the last checkpoint is not found. No .ckpt file transfer.')
+
     def find_last_ckpt(self):
+        self.copy_last_ckpt_files()
+        files = [f for f in os.listdir(self.ckpt_dir_load) if f.endswith('.ckpt')]
+        print(sorted(files))
+
         existing_ckpts_dict = {}
         for ckpt_prefix in self.ckpt_prefixes:
-            existing_ckpts = sorted(glob.glob(os.path.join(self.ckpt_dir_load, f"{ckpt_prefix}_**.ckpt")))
-            existing_ckpts_dict[ckpt_prefix] = set([os.path.basename(existing_ckpt)[len(ckpt_prefix)+1:-5] for existing_ckpt in existing_ckpts])
-        
+            #existing_ckpts = sorted(glob.glob(os.path.join(last_ckpt_dir, f"{ckpt_prefix}_**.ckpt")))
+            filtered_files = [f for f in files if f.startswith(ckpt_prefix)]
+            sorted_filtered_files = sorted(filtered_files)
+            existing_ckpts_dict[ckpt_prefix] = set([f[len(ckpt_prefix)+1:-5] for f in sorted_filtered_files])
+
         existing_ckpts_b = sorted(list(existing_ckpts_dict["net_b"].intersection(existing_ckpts_dict["sample_net_b"], existing_ckpts_dict["optimizer_b"])), reverse=True)
         existing_ckpts_f = sorted(list(existing_ckpts_dict["net_f"].intersection(existing_ckpts_dict["sample_net_f"], existing_ckpts_dict["optimizer_f"])), reverse=True)
 
@@ -884,10 +985,16 @@ class IPF_DBDSB:
         for i in tqdm(range(step, num_iter + 1), mininterval=30):
             
             if (i == step) or ((i-1) % self.args.cache_refresh_stride == 0):
-                new_dl = None
+                cache_train_dl = None
+                cache_val_dl = None
                 torch.cuda.empty_cache()
                 if not first_it:
-                    new_dl = self.new_cacheloader(*self.compute_prev_it(forward_or_backward, n), refresh_idx=(i-1) // self.args.cache_refresh_stride)
+                    new_ds = self.new_cacheloader(*self.compute_prev_it(forward_or_backward, n), build_dataloader=False, refresh_idx=(i-1) // self.args.cache_refresh_stride)
+                    val_ds_size = len(new_ds) // 10
+                    train_ds_size = len(new_ds) - val_ds_size
+                    cache_train_ds, cache_val_ds = random_split(new_ds, [train_ds_size, val_ds_size])
+                    cache_train_dl = self.build_dataloader(cache_train_ds, batch_size=self.batch_size // self.num_repeat_data)
+                    cache_val_dl = self.build_dataloader(cache_val_ds, batch_size=self.val_batch_size)
 
             self.net[forward_or_backward].train()
 
@@ -898,9 +1005,9 @@ class IPF_DBDSB:
                 x0, y, x1, _, _ = self.sample_batch(self.init_dl, self.final_dl)
             else:
                 if self.cdsb:
-                    x0, x1, y = next(new_dl)
+                    x0, x1, y = next(cache_train_dl)
                 else:
-                    x0, x1 = next(new_dl)
+                    x0, x1 = next(cache_train_dl)
 
             x0, x1 = x0.to(self.device), x1.to(self.device)
             x0, x1 = x0.repeat_interleave(self.num_repeat_data, dim=0), x1.repeat_interleave(self.num_repeat_data, dim=0)
@@ -944,14 +1051,70 @@ class IPF_DBDSB:
 
             self.i, self.n, self.fb = i, n, forward_or_backward
 
+            if self.valid_ds is not None and i % self.validation_stride == 0:
+                #save the last checkpoint
+                self.save_last_ckpt(i, n, forward_or_backward)
+
+                # Use EMA model for validation
+                ema_net = self.get_sample_net(forward_or_backward)
+                total_valid_loss = 0.0
+                num_valid_batches = 0
+
+                if first_it:
+                    val_total_batches = ceil(len(self.valid_ds) / self.val_batch_size)
+                else:
+                    val_total_batches = ceil(len(cache_val_ds) / self.val_batch_size)
+                        
+                with torch.no_grad():  # Disable gradient calculations
+                    for _ in range(val_total_batches):  # Iterate over the validation dataset
+                        y = None
+                        if first_it:
+                            x0, y, x1, _, _ = self.sample_batch(self.valid_dl, self.final_dl)
+                        else:
+                            if self.cdsb:
+                                x0, x1, y = next(cache_val_dl)
+                            else:
+                                x0, x1 = next(cache_val_dl)
+
+                        x0, x1 = x0.to(self.device), x1.to(self.device)
+                        x0, x1 = x0.repeat_interleave(self.num_repeat_data, dim=0), x1.repeat_interleave(self.num_repeat_data, dim=0)
+                        x, t, out = self.langevin.get_train_tuple(x0, x1, fb=forward_or_backward, first_it=first_it)
+                        
+                        if self.cdsb:
+                            y = y.to(self.device)
+                            y = y.repeat_interleave(self.num_repeat_data, dim=0)
+
+                        pred, std = self.apply_net(x, y, t, net=ema_net, fb=forward_or_backward, return_scale=True)
+                        
+                        if self.args.loss_scale:
+                            loss_scale = std
+                        else:
+                            loss_scale = 1.
+                        
+                        valid_loss = F.mse_loss(loss_scale*pred, loss_scale*out)
+                        total_valid_loss += valid_loss.item()
+                        num_valid_batches += 1
+
+                avg_valid_loss = total_valid_loss / num_valid_batches
+                self.logger.log_metrics({'fb': forward_or_backward, 'ipf': n, 'val_loss': avg_valid_loss}, step=self.compute_current_step(i, n))
+                
+                # No need to explicitly set the training model back to training mode 
+                # because the EMA model was a separate instance
+
+                #plot samples
+                if self.args.space == 'observation':
+                    self.plot_and_test_step(i, n, forward_or_backward, datasets=['test'], plotter='fast')
+
             if i != num_iter:
                 self.save_step(i, n, forward_or_backward)
-            
-            if self.compute_current_step(i, n) % self.fid_stride == 0 and forward_or_backward=='b': #calculate the default FID every self.fid_stride backward steps.
-                self.plot_and_test_step(i, n, forward_or_backward, plotter='default')
+
+            if self.args.space == 'observation':
+                if self.compute_current_step(i, n) % self.fid_stride == 0 and forward_or_backward=='b': #calculate the default FID every self.fid_stride backward steps.
+                    self.plot_and_test_step(i, n, forward_or_backward, plotter='default')
 
         # Pre-cache current iter at end of training
-        new_dl = None
+        cache_train_dl = None
+        cache_val_dl = None
         self.save_ckpt(num_iter, n, forward_or_backward)
         if not first_it_fn(*self.compute_next_it(forward_or_backward, n)):
             self.new_cacheloader(forward_or_backward, n, build_dataloader=False)

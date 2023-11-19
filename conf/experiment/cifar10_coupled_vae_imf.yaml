@@ -1,0 +1,14 @@
+# @package _global_
+method: dbdsb
+dataset: cifar10_vae
+vae: cifar10
+num_steps: 50
+first_num_iter: 250000
+num_iter: 100000
+first_coupling: ind
+dependent_coupling: vae
+run_name: coupled_vae_stochastic_decoder
+decoding: stochastic
+gamma_min: 0.02
+gamma_max: 0.02
+test_num_steps_sequence: [10, 20]
