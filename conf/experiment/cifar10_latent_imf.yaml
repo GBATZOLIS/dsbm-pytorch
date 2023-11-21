@@ -1,7 +1,13 @@
 # @package _global_
-method: dbdsb
-dataset: cifar10_vae
-vae: cifar10
+
+defaults:
+  - override /model: MLP
+  - override /method: dbdsb
+  - override /dataset: cifar10_vae
+  - override /vae: cifar10
+
+run_name: coupled_vae_stochastic_decoder_latent_deep
+
 first_coupling: ind
 gamma_min: 0.034
 gamma_max: 0.034
@@ -14,7 +20,6 @@ gif_stride: 75000
 cache_npar: 100000
 ema_rate: 0.9999
 space: latent
-model: MLP
-run_name: coupled_vae_stochastic_decoder_latent_deep
+
 model:
   inter_layer_widths: [512, 512, 512]

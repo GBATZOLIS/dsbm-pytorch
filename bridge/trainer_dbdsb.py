@@ -72,6 +72,7 @@ class IPF_DBDSB:
             elif self.args.gamma_space == 'geomspace':
                 self.gammas = np.geomspace(self.args.gamma_min, self.args.gamma_max, self.num_steps)
         self.gammas = torch.tensor(self.gammas).to(self.device).float() #σ_t**2
+        print(self.gammas[0])
         self.T = torch.sum(self.gammas)
         self.accelerator.print("T:", self.T.item())
         self.sigma = torch.sqrt(self.T).item()
@@ -270,6 +271,7 @@ class IPF_DBDSB:
             
         else:
             self.ckpt_dir_load = os.path.abspath(self.ckpt_dir)
+            print(self.ckpt_dir_load)
             ckpt_dir_load_list = os.path.normpath(self.ckpt_dir_load).split(os.sep)
             if 'test' in ckpt_dir_load_list:
                 self.ckpt_dir_load = os.path.join(os.sep, *ckpt_dir_load_list[:ckpt_dir_load_list.index('test')], "checkpoints/")

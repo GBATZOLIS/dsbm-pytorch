@@ -1,0 +1,123 @@
+phase: train
+space: observation
+name: ${Dataset}_${data.dataset}
+run_name: coupled_vae_stochastic_decoder
+run: 0
+seed: 42
+use_default_wandb_name: false
+wandb_id: null
+LOGGER: Wandb
+CSV_log_dir: ./
+optimizer: AdamW
+test_batch_size: 1000
+plot_level: 1
+cache_refresh_stride: ${num_iter}
+cache_num_steps: ${num_steps}
+test_num_steps: ${num_steps}
+test_num_steps_sequence:
+- 10
+- 20
+normalize_x1: false
+paths:
+  experiments_dir_name: experiments
+  data_dir_name: data
+autostart_next_it: false
+checkpoint_run: false
+checkpoint_it: 1
+checkpoint_pass: b
+checkpoint_iter: 0
+checkpoint_dir: null
+sample_checkpoint_f: null
+sample_checkpoint_b: ${checkpoint_dir}/
+checkpoint_f: null
+checkpoint_b: ${checkpoint_dir}/
+optimizer_checkpoint_f: null
+optimizer_checkpoint_b: ${checkpoint_dir}/
+Model: UNET
+model:
+  num_channels: 128
+  channel_mult: null
+  num_res_blocks: 2
+  num_heads: 4
+  attention_resolutions: 16,8
+  dropout: 0.1
+  use_checkpoint: false
+  use_scale_shift_norm: true
+  resblock_updown: false
+  temb_scale: 1000
+Method: DBDSB
+first_num_iter: 250000
+sde: ve
+gamma_max: 0.02
+gamma_min: 0.02
+gamma_space: linspace
+symmetric_gamma: false
+first_coupling: ind
+dependent_coupling: vae
+mean_match: false
+loss_scale: true
+std_trick: false
+cdsb: false
+Dataset: cifar10
+data:
+  dataset: CIFAR10
+  image_size: 32
+  channels: 3
+  random_flip: true
+transfer: true
+Dataset_transfer: vae
+final_adaptive: false
+adaptive_mean: false
+mean_final: torch.zeros([${data.channels}, ${data.image_size}, ${data.image_size}])
+var_final: 1 * torch.ones([${data.channels}, ${data.image_size}, ${data.image_size}])
+load: true
+device: cuda
+num_workers: 4
+pin_memory: true
+validation_stride: 10000
+log_stride: 100
+gif_stride: 50000
+fid_stride: 200000
+plot_npar: 100
+test_npar: 50000
+cache_npar: 50000
+cache_batch_size: 1250
+num_repeat_data: 1
+use_prev_net: true
+ema: true
+ema_rate: 0.9999
+grad_clipping: true
+grad_clip: 1.0
+batch_size: 128
+num_iter: 100000
+n_ipf: 100
+lr: 0.0001
+weight_decay: 0.01
+num_steps: 50
+variational: true
+latent_dim: 384
+kl_weight: 0.01
+tuning_gpus:
+- 0
+kl_weight_min: 0.0001
+kl_weight_max: 1
+vae_tuning_freq: 50
+n_trials: 5
+tuning_fid_feature: 2048
+decoding: stochastic
+vae_checkpoint_path: /store/CIA/gb511/projects/sbvae/code/experiments/cifar10_vae_tuning/kl_0.01/42/wandb/latest-run/files/vae_checkpoints/epoch=1377--val_loss=8.380.ckpt
+encoder:
+  name: simple_encoder
+  base_channel_size: 128
+  time_conditional: false
+  split_output: true
+decoder:
+  name: simple_decoder
+  base_channel_size: 128
+vae_optim:
+  lr: 0.0001
+  use_scheduler: true
+  sch_factor: 0.75
+  sch_patience: 100
+  sch_min_lr: 1.0e-06
+early_stopping_patience: 300
