@@ -14,6 +14,12 @@ def main(cfg):
         cfg = OmegaConf.to_container(cfg, resolve=True)
         cfg = OmegaConf.create(cfg)
 
+    # Check if job configuration keys are included
+    job_keys = ["job", "run", "sweep", "job_logging"]
+    for key in job_keys:
+        if key not in cfg:
+            print(f"Warning: '{key}' key is not in the final configuration.")
+
     # Building the full path to the save location
     save_path = f"{original_dir}/conf/experiment/cifar10_coupled_vae_imf_full_config.yaml"
 

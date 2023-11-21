@@ -15,6 +15,7 @@ cache_refresh_stride: ${num_iter}
 cache_num_steps: ${num_steps}
 test_num_steps: ${num_steps}
 test_num_steps_sequence:
+- 5
 - 10
 - 20
 normalize_x1: false
@@ -46,10 +47,10 @@ model:
   resblock_updown: false
   temb_scale: 1000
 Method: DBDSB
-first_num_iter: 250000
+first_num_iter: 600000
 sde: ve
-gamma_max: 0.02
-gamma_min: 0.02
+gamma_max: 0.1
+gamma_min: 0.1
 gamma_space: linspace
 symmetric_gamma: false
 first_coupling: ind
@@ -80,7 +81,7 @@ gif_stride: 50000
 fid_stride: 200000
 plot_npar: 100
 test_npar: 50000
-cache_npar: 50000
+cache_npar: 100000
 cache_batch_size: 1250
 num_repeat_data: 1
 use_prev_net: true
@@ -89,11 +90,11 @@ ema_rate: 0.9999
 grad_clipping: true
 grad_clip: 1.0
 batch_size: 128
-num_iter: 100000
+num_iter: 200000
 n_ipf: 100
 lr: 0.0001
 weight_decay: 0.01
-num_steps: 50
+num_steps: 10
 variational: true
 latent_dim: 384
 kl_weight: 0.01

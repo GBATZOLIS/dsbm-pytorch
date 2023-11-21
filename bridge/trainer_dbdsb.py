@@ -388,11 +388,7 @@ class IPF_DBDSB:
                     sample_net_b.load_state_dict(checkpoint_state_dict)
                     sample_net_b = sample_net_b.to(self.device)
                     self.update_ema('b')
-                    self.ema_helpers['b'].register(sample_net_b)
-
-                    
-
-                    
+                    self.ema_helpers['b'].register(sample_net_b)                   
 
     def worker_init_fn(self, worker_id):
         np.random.seed(np.random.get_state()[1][0] + worker_id + self.accelerator.process_index * self.args.num_workers)
