@@ -1,10 +1,14 @@
 import argparse
 import yaml
 import os
+from omegaconf import OmegaConf
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 def load_config(config_file):
     with open(config_file, 'r') as file:
-        return yaml.safe_load(file)
+        config_dict = yaml.safe_load(file)
+        return OmegaConf.create(config_dict)
 
 def main(obs_config_path, latent_config_path):
     obs_cfg = load_config(obs_config_path)

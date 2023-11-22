@@ -122,3 +122,4 @@ vae_optim:
   sch_patience: 100
   sch_min_lr: 1.0e-06
 early_stopping_patience: 300
+run_dir: ./experiments/cifar10_CIFAR10/coupled_vae_stochastic_decoder

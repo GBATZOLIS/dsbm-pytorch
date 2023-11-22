@@ -89,7 +89,7 @@ class IPF_DBDSB:
         self.build_models()
         self.build_ema()
 
-        if args.dependent_coupling == 'vae':
+        if args.dependent_coupling == 'vae' or args.space == 'latent':
             self.vae_model = self.build_vae_model(args)
 
         # get optims
@@ -160,11 +160,77 @@ class IPF_DBDSB:
     #helper for testing loop
     def set_checkpoint_dirs(self, checkpoints, imf_iter):
         self.checkpoint_b = checkpoints[imf_iter]['net_b']
+        print(f'self.checkpoint_b = {self.checkpoint_b}')
+
         self.sample_checkpoint_b = checkpoints[imf_iter]['sample_net_b']
         self.optimizer_checkpoint_b = checkpoints[imf_iter]['optimizer_b']
         self.checkpoint_f = checkpoints[imf_iter]['net_f']
+        print(f'self.checkpoint_f = {self.checkpoint_f}')
+
         self.sample_checkpoint_f = checkpoints[imf_iter]['sample_net_f']
         self.optimizer_checkpoint_f = checkpoints[imf_iter]['optimizer_f']
+
+    def generate_dataset(self, imf_iter=-1, x_start=None):
+        #fetch run_dir
+        self.ckpt_dir = os.path.join(self.args.run_dir, './checkpoints/')
+        self.ckpt_dir_load = os.path.abspath(self.ckpt_dir)
+        print(f'Checkpoint dir: {self.ckpt_dir_load}')
+        self.checkpoint_pass, self.step = 'b', 1
+        self.first_pass, self.resume, self.resume_f = True, True, True
+
+        checkpoints = self.get_checkpoints(self.ckpt_dir_load)
+        completed_imf_iters = sorted(checkpoints.keys())
+        print(f'completed IMF iterations based on the checkpoints: {completed_imf_iters}')
+
+        if imf_iter == -1: #use the last imf iteration
+            imf_iter = completed_imf_iters[-1]
+        else:
+            imf_iter = completed_imf_iters[imf_iter-1] #we suppose that imf_iter takes values: 1,2,3..
+        
+        self.checkpoint_it = imf_iter
+        self.set_checkpoint_dirs(checkpoints, imf_iter)
+        self.build_models()
+        self.build_ema()
+
+        num_iter = self.compute_max_iter('b', imf_iter)
+        datasets=['train']
+        num_steps=10
+        self.set_seed(seed=0 + self.accelerator.process_index)
+
+        metrics, tensors = self.plotter(num_iter, imf_iter, 'b', sampler='sde', \
+                                datasets=datasets, calc_energy=False,
+                                num_steps=num_steps, return_tensors=True, x_start=x_start)
+
+        self.save_logger.log_metrics(metrics, step=imf_iter) #we need to check the metrics (W2/FID)
+
+
+        if self.args.space == 'latent':
+            x_last = tensors['x_last']  # This is distributed as E(X)
+            print(f'x_last.size(): {x_last.size()}')
+            
+            # Initialize list to collect processed batches
+            processed_batches = []
+
+            # Batch processing
+            for i in range(0, x_last.size(0), self.test_batch_size):
+                x_last_batch = x_last[i:i+self.test_batch_size].to(self.device)
+                mean_x, _ = self.vae_model.decode(x_last_batch)
+
+                kl_weight_tensor = torch.tensor(self.args.kl_weight, device=self.device)
+                if self.args.decoding == 'stochastic':
+                    x_last_obs_batch = mean_x + torch.sqrt(kl_weight_tensor) * torch.randn_like(mean_x, device=self.device)
+                elif self.args.decoding == 'deterministic':
+                    x_last_obs_batch = mean_x
+
+                # Collect the batch result
+                processed_batches.append(x_last_obs_batch.cpu())  # Move to CPU to reduce GPU memory usage
+
+            # Concatenate all processed batches
+            x_last_obs = torch.cat(processed_batches, dim=0)
+            return x_last_obs
+
+        elif self.args.space == 'observation':
+            return tensors['x_last']
 
     def test(self,):
         #in this file we will do extensive for the trained markovian projections

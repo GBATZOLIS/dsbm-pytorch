@@ -16,21 +16,22 @@ def setup(args, accelerator):
     return ipf
 
 def run(obs_args, latent_args):
+    print(obs_args)
     accelerator = Accelerator(cpu=obs_args.device == 'cpu', split_batches=True)
     accelerator.print('Directory: ' + os.getcwd())
 
-    # Set working directory for obs_args and setup
-    os.chdir(obs_args.run_dir)
-    accelerator.print('Setting up with obs_args in directory: ' + os.getcwd())
-    obs_imf = setup(obs_args, accelerator)
+    # Convert relative paths to absolute paths
+    latent_args.run_dir = os.path.abspath(latent_args.run_dir)
+    obs_args.run_dir = os.path.abspath(obs_args.run_dir)
 
     # Change directory for latent_args and setup
     os.chdir(latent_args.run_dir)
     accelerator.print('Setting up with latent_args in directory: ' + os.getcwd())
     latent_imf = setup(latent_args, accelerator)
+    x_vae = latent_imf.generate_dataset(imf_iter=10)
 
-    # continue with your run logic...
-
-if __name__ == "__main__":
-    # Assuming obs_args and latent_args are obtained somehow
-    run(obs_args, latent_args)
+    # Set working directory for obs_args and setup
+    os.chdir(obs_args.run_dir)
+    accelerator.print('Setting up with obs_args in directory: ' + os.getcwd())
+    obs_imf = setup(obs_args, accelerator)
+    x = obs_imf.generate_dataset(imf_iter=1, x_start=x_vae)

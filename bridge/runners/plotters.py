@@ -47,7 +47,9 @@ class Plotter(object):
 
         self.metrics_dict = {}
 
-    def __call__(self, i, n, fb, sampler='sde', datasets='all', ode_method='odeint', calc_energy=False, num_steps='default'):
+    def __call__(self, i, n, fb, sampler='sde', datasets='all', ode_method='odeint', \
+                    calc_energy=False, num_steps='default', \
+                    return_tensors=False, x_start=None):
         assert sampler in ['sde', 'ode']
         out = {}
         self.step = self.ipf.compute_current_step(i, n)
@@ -103,7 +105,7 @@ class Plotter(object):
                 x_start, y_start, x_tot, x_init, mean_final, var_final, metric_results = \
                     self.generate_sequence_joint(dl, i, n, fb, dl_name=dl_name, sampler=sampler, 
                                                 generate_npar=generate_npar, full_traj=False, num_steps=num_steps,
-                                                ode_method=ode_method, calc_energy=calc_energy)
+                                                ode_method=ode_method, calc_energy=calc_energy, x_start=x_start)
                 end_time = time.time()
                 print(f"Generating test dataset with {num_steps} integration steps takes {end_time - start_time} seconds to execute")
 
@@ -130,7 +132,14 @@ class Plotter(object):
             
 
         torch.cuda.empty_cache()
-        return out
+        if return_tensors:
+            images = {'x_start':x_start,
+                      'y_start':y_start,
+                      'x_last':x_last,
+                      'x_init':x_init}
+            return out, images
+        else:
+            return out
 
 
     def prefix_fn(self, dl_name, sampler, num_steps='default'):
@@ -165,7 +174,7 @@ class Plotter(object):
 
 
     def generate_sequence_joint(self, dl, i, n, fb, dl_name='train', sampler='sde', generate_npar=None, 
-                            full_traj=True, num_steps='default', ode_method='odeint', calc_energy=False):
+                            full_traj=True, num_steps='default', ode_method='odeint', calc_energy=False, x_start=None):
         iter_dl = iter(dl)
 
         all_batch_x = []
@@ -196,14 +205,26 @@ class Plotter(object):
 
                 with torch.no_grad():
                     if fb == 'f':
-                        batch_x = init_batch_x
+                        if x_start is None:
+                            batch_x = init_batch_x
+                        else:
+                            index_start = iters * self.ipf.test_batch_size
+                            index_end = (iters+1) * self.ipf.test_batch_size
+                            batch_x = x_start[index_start:index_end]
+
                         if sampler == 'ode':
                             x_tot, nfe = self.ipf.forward_sample_ode(batch_x, batch_y, permute=False)
                         else:
                             x_tot, nfe = self.ipf.forward_sample(batch_x, batch_y, permute=False, num_steps=num_steps)
                         # x_last_true = final_batch_x
                     else:
-                        batch_x = final_batch_x
+                        if x_start is None:
+                            batch_x = final_batch_x
+                        else:
+                            index_start = iters * self.ipf.test_batch_size
+                            index_end = (iters+1) * self.ipf.test_batch_size
+                            batch_x = x_start[index_start:index_end]
+
                         if sampler == 'ode':
                             '''
                             x_tot, nfe, tsteps, energies = self.ipf.backward_sample_ode_under_testing(batch_x, batch_y, permute=False, 
