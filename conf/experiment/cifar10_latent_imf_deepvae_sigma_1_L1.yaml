@@ -1,0 +1,30 @@
+# @package _global_
+
+defaults:
+  - override /method: dbdsb
+  - override /dataset: cifar10_vae
+  - override /vae: cifar10_deep
+
+run_name: latent_imf_deepvae_scaled_kl_1e-2_L1
+name: ${Dataset}_latent
+
+vae_checkpoint_path: /store/CIA/gb511/projects/sbvae/code/experiments/cifar10_latent/deep_vae_structured_latent/wandb/run-20231212_073911-w7krwxb2/files/vae_checkpoints/epoch=253--val_loss=8.276.ckpt
+loss_type : L1
+
+first_coupling: ind
+gamma_min: 0.02
+gamma_max: 0.02
+test_num_steps_sequence: [25, 50]
+num_steps: 50
+first_num_iter: 750000
+num_iter: 200000
+validation_stride: 20000
+gif_stride: 100000
+cache_npar: 100000
+ema_rate: 0.9999
+space: latent
+
+model:
+  num_channels: 128
+  channel_mult: [1,2]
+  attention_resolutions: [8,4]

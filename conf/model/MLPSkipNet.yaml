@@ -1,0 +1,13 @@
+Model: MLPSkipNet
+
+model:
+  in_channels : ${latent_dim}
+  num_layers : 10
+  starting_skip_layer : 1
+  num_hid_channels : 2048
+  num_time_emb_channels : 64
+  use_norm : True
+  condition_bias : 1
+  dropout : 0
+  num_time_layers : 2
+  time_last_act : False

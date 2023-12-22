@@ -1,0 +1,59 @@
+# @package _global_
+
+cdsb: False
+
+# data 
+Dataset: ffhq
+data:
+  dataset: ffhq
+  image_size: 256
+  channels: 3
+  random_flip: true
+  random_crop: true
+  percentage_use: 100
+  train_percentage: 0.9
+  val_percentage: 0.05
+
+# transfer
+transfer: True
+Dataset_transfer: vae
+
+
+final_adaptive: False
+adaptive_mean: False
+mean_final: torch.zeros([${data.channels}, ${data.image_size}, ${data.image_size}])
+var_final: 1 * torch.ones([${data.channels}, ${data.image_size}, ${data.image_size}])
+load: True
+
+# device
+device: cuda
+num_workers: 4
+pin_memory: True
+
+# logging
+validation_stride: 10000
+log_stride: 100
+gif_stride: 50000
+fid_stride: 200000
+plot_npar: 100
+test_npar: 50000
+test_batch_size: 128
+cache_npar: 70000 #250000
+cache_batch_size: 128
+num_repeat_data: 1  # 4
+cache_refresh_stride: ${num_iter}
+
+# training
+optimizer: AdamW
+use_prev_net: True
+ema: True
+ema_rate: 0.9999
+grad_clipping: True
+grad_clip: 1.0
+batch_size: 128
+num_iter: 500000
+n_ipf: 100
+lr: 0.0001
+weight_decay: 0.01
+
+num_steps: 200

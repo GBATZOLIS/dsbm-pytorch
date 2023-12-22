@@ -13,13 +13,15 @@ from tqdm import tqdm
 import glob
 
 from .data import DBDSB_CacheLoader
+from .data.utils import save_image
 from .sde import *
 from .runners import *
 from .runners.config_getters import get_vae_model, get_model, get_optimizer, get_plotter, get_logger
 from .runners.ema import EMAHelper
 import wandb
 from math import ceil
-
+import torchvision.transforms as transforms
+import torchvision.utils as vutils
 
 # from torchdyn.core import NeuralODE
 from torchdiffeq import odeint
@@ -97,6 +99,8 @@ class IPF_DBDSB:
 
         # get data
         self.build_dataloaders()
+        self.compute_normalizing_constants()
+
         if self.args.sde == "ve":
             self.langevin = DBDSB_VE(self.sigma, self.num_steps, self.timesteps, self.shape_x, self.shape_y, self.args.first_coupling, self.args.mean_match)
         elif self.args.sde == "vp":
@@ -116,12 +120,29 @@ class IPF_DBDSB:
         self.test_num_steps_sequence = self.args.get("test_num_steps_sequence", []) #we test FID with this sequence of integrations steps
 
         self.plotter = self.get_plotter()
-        self.fast_plotter = self.get_plotter(fid_feature=192) #(fid_feature=192) #use this plotter when evaluating with the sequence of integration steps. Default FID computation takes time.
+        self.fast_plotter = self.get_plotter() #(fid_feature=192) #use this plotter when evaluating with the sequence of integration steps. Default FID computation takes time.
         
         self.stride = self.args.gif_stride
         self.fid_stride = self.args.fid_stride
         self.stride_log = self.args.log_stride
         self.validation_stride = getattr(self.args, 'validation_stride', 10000)
+
+    def compute_normalizing_constants(self):
+        # Assuming 'encodings' is a tensor attribute of 'self.init_ds' that contains all the data
+        # Flatten the encodings tensor to consider it as a concatenation of samples
+        encodings = self.init_ds.encodings.view(-1)  # Flatten the tensor
+
+        # Compute the mean and standard deviation directly from the flattened tensor
+        mean = torch.mean(encodings)
+        std_dev = torch.std(encodings)
+
+        # Save the computed mean and standard deviation as attributes
+        self.mean = mean
+        self.std_dev = std_dev
+
+        # Report the computed mean and standard deviation
+        print(f'Mean: {self.mean}')
+        print(f'Standard Deviation: {self.std_dev}')
 
     def get_logger(self, name='logs'):
         return get_logger(self.args, name)
@@ -139,20 +160,28 @@ class IPF_DBDSB:
             'sample_net_f': None, 'sample_net_b': None
         })
 
-        pattern = re.compile(r"(net|optimizer|sample_net)_(f|b)_([0-9]+)_\d+.ckpt")
+        pattern = re.compile(r"(net|optimizer|sample_net)_(f|b)_([0-9]+)_(\d+).ckpt")
 
         for root, dirs, files in os.walk(base_checkpoint_dir):
-            # Skip the 'last' subdirectory
             if 'last' in root:
                 continue
 
             for file in files:
                 match = pattern.match(file)
                 if match:
-                    checkpoint_type, fb_type, ipf_iteration = match.groups()
+                    checkpoint_type, fb_type, ipf_iteration, current_iter = match.groups()
+                    current_iter = int(current_iter)  # Convert the iteration number to integer
                     key = f"{checkpoint_type}_{fb_type}"
                     full_path = os.path.join(root, file)
-                    checkpoints_dict[int(ipf_iteration)][key] = full_path
+                    
+                    # Update the checkpoint only if it's the one with higher iteration number
+                    existing_checkpoint = checkpoints_dict[int(ipf_iteration)].get(key)
+                    if existing_checkpoint:
+                        _, _, _, existing_iter = pattern.match(os.path.basename(existing_checkpoint)).groups()
+                        if int(current_iter) > int(existing_iter):
+                            checkpoints_dict[int(ipf_iteration)][key] = full_path
+                    else:
+                        checkpoints_dict[int(ipf_iteration)][key] = full_path
 
         return dict(checkpoints_dict)
 
@@ -171,12 +200,22 @@ class IPF_DBDSB:
         self.optimizer_checkpoint_f = checkpoints[imf_iter]['optimizer_f']
 
     def generate_dataset(self, imf_iter=-1, x_start=None):
+        
+        im_dir = os.path.join(self.args.run_dir, 'test', './im')
+        if not os.path.exists(im_dir):
+            os.makedirs(im_dir)
+
+        def g_save_image(tensor, name, dir, **kwargs):
+            fp = os.path.join(dir, f'{name}.png')
+            save_image(tensor, fp, nrow=10)
+            return [fp]
+
         #fetch run_dir
         self.ckpt_dir = os.path.join(self.args.run_dir, './checkpoints/')
         self.ckpt_dir_load = os.path.abspath(self.ckpt_dir)
         print(f'Checkpoint dir: {self.ckpt_dir_load}')
         self.checkpoint_pass, self.step = 'b', 1
-        self.first_pass, self.resume, self.resume_f = True, True, True
+        self.first_pass, self.resume, self.resume_f = True, True, False
 
         checkpoints = self.get_checkpoints(self.ckpt_dir_load)
         completed_imf_iters = sorted(checkpoints.keys())
@@ -184,8 +223,6 @@ class IPF_DBDSB:
 
         if imf_iter == -1: #use the last imf iteration
             imf_iter = completed_imf_iters[-1]
-        else:
-            imf_iter = completed_imf_iters[imf_iter-1] #we suppose that imf_iter takes values: 1,2,3..
         
         self.checkpoint_it = imf_iter
         self.set_checkpoint_dirs(checkpoints, imf_iter)
@@ -227,6 +264,22 @@ class IPF_DBDSB:
 
             # Concatenate all processed batches
             x_last_obs = torch.cat(processed_batches, dim=0)
+
+            filename_grid = 'latent_reconstruction'
+            filepath_grid_list = g_save_image(x_last_obs[:100], filename_grid, im_dir)
+            self.save_logger.log_image(filename_grid, filepath_grid_list, fb='b')
+
+            train_latent = next(iter(self.save_dls_dict['train']))[0]
+            mean_x, _ = self.vae_model.decode(train_latent)
+            kl_weight_tensor = torch.tensor(self.args.kl_weight, device=self.device)
+            if self.args.decoding == 'stochastic':
+                x_last_obs_batch = mean_x + torch.sqrt(kl_weight_tensor) * torch.randn_like(mean_x, device=self.device)
+            elif self.args.decoding == 'deterministic':
+                x_last_obs_batch = mean_x
+
+            filename_grid = 'real_latent_reconstruction'
+            filepath_grid_list = g_save_image(x_last_obs_batch[:100], filename_grid, im_dir)
+            self.save_logger.log_image(filename_grid, filepath_grid_list, fb='b')
             return x_last_obs
 
         elif self.args.space == 'observation':
@@ -442,14 +495,14 @@ class IPF_DBDSB:
                 if self.resume:
                     checkpoint_state_dict = torch.load(self.sample_checkpoint_b)
                     # Print the first 10 keys from the checkpoint state dict
-                    print("Checkpoint State Dict Keys (first 10):")
-                    print(list(checkpoint_state_dict.keys()))
+                    #print("Checkpoint State Dict Keys (first 10):")
+                    #print(list(checkpoint_state_dict.keys()))
 
                     # Assuming sample_net_b has been loaded with the checkpoint state dict
                     model_state_dict = sample_net_b.state_dict()
                     # Print the first 10 keys from the model's state dict
-                    print("Model State Dict Keys (first 10):")
-                    print(list(model_state_dict.keys()))
+                    #print("Model State Dict Keys (first 10):")
+                    #print(list(model_state_dict.keys()))
 
                     sample_net_b.load_state_dict(checkpoint_state_dict)
                     sample_net_b = sample_net_b.to(self.device)
@@ -636,6 +689,11 @@ class IPF_DBDSB:
             if self.cdsb:
                 y_c = y_c.expand(final_batch_x.shape[0], *self.shape_y).clone().to(self.device)
             x_tot_c, _, _, steps_expanded = self.langevin.record_langevin_seq(sample_fn, final_batch_x, y_c, 'b', sample=True, num_steps=num_steps)
+            # x_tot_c.size = (num_samples, num_steps, *shape_x)
+
+            if self.args.space == 'latent':
+                # Revert the standardization of the last point of the trajectory
+                x_tot_c[:, -1, ...] = (x_tot_c[:, -1, ...] * self.std_dev) + self.mean
 
             if permute:
                 x_tot_c = x_tot_c.permute(1, 0, *list(range(2, len(x_tot_c.shape))))  # (num_steps, num_samples, *shape_x)
@@ -1019,6 +1077,15 @@ class IPF_DBDSB:
             return True, checkpoint_it, checkpoint_pass, checkpoint_step, existing_ckpt_b, existing_ckpt_f
 
     def ipf_iter(self, forward_or_backward, n):
+        # Set default loss type to L2 if not specified
+        loss_type = self.args.get('loss_type', 'L2')
+        
+        # Define the criterion based on the loss type
+        if loss_type == 'L2':
+            criterion = F.mse_loss
+        elif loss_type == 'L1':
+            criterion = F.l1_loss
+
         if self.first_pass:
             step = self.step
         else:
@@ -1067,6 +1134,8 @@ class IPF_DBDSB:
             y = None
             if first_it:
                 x0, y, x1, _, _ = self.sample_batch(self.init_dl, self.final_dl)
+                if self.args.space == 'latent' and forward_or_backward=='b':
+                    x0 = (x0 - self.mean) / self.std_dev
             else:
                 if self.cdsb:
                     x0, x1, y = next(cache_train_dl)
@@ -1089,7 +1158,7 @@ class IPF_DBDSB:
             else:
                 loss_scale = 1.
 
-            loss = F.mse_loss(loss_scale*pred, loss_scale*out)
+            loss = criterion(loss_scale*pred, loss_scale*out)
 
             self.accelerator.backward(loss)
 
@@ -1134,6 +1203,8 @@ class IPF_DBDSB:
                         y = None
                         if first_it:
                             x0, y, x1, _, _ = self.sample_batch(self.valid_dl, self.final_dl)
+                            if self.args.space == 'latent' and forward_or_backward=='b':
+                                x0 = (x0 - self.mean) / self.std_dev
                         else:
                             if self.cdsb:
                                 x0, x1, y = next(cache_val_dl)
@@ -1155,7 +1226,7 @@ class IPF_DBDSB:
                         else:
                             loss_scale = 1.
                         
-                        valid_loss = F.mse_loss(loss_scale*pred, loss_scale*out)
+                        valid_loss = criterion(loss_scale*pred, loss_scale*out)
                         total_valid_loss += valid_loss.item()
                         num_valid_batches += 1
 

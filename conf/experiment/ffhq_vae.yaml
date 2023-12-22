@@ -1,0 +1,18 @@
+# @package _global_
+
+defaults:
+  - override /method: vae
+  - override /dataset: ffhq
+  - override /vae: ffhq
+
+run_name: vae
+name: ${Dataset}_latent
+
+paths:
+  data_dir_name: /store/CIA/gb511/datasets
+
+accumulate_grad_batches: 2
+transfer: False #set it to True when you train a SB between either in the observation space or in the latent space
+batch_size: 8
+vae_checkpoint_path: None
+num_workers: 4

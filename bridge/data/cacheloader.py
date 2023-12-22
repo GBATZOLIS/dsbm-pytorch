@@ -240,9 +240,9 @@ def DBDSB_CacheLoader(sample_direction, sample_fn, init_dl, final_dl, num_batche
 
     if ipf.accelerator.is_main_process:
         # Visualize first entries
-        num_plots_grid = 100
-        ipf.plotter.save_image(torch.from_numpy(fp[:num_plots_grid, 0]), f'cache_{sample_direction}_{n:03}_x0', "./", domain=0)
-        ipf.plotter.save_image(torch.from_numpy(fp[:num_plots_grid, 1]), f'cache_{sample_direction}_{n:03}_x1', "./", domain=1)
+        #num_plots_grid = 100
+        #ipf.plotter.save_image(torch.from_numpy(fp[:num_plots_grid, 0]), f'cache_{sample_direction}_{n:03}_x0', "./", domain=0)
+        #ipf.plotter.save_image(torch.from_numpy(fp[:num_plots_grid, 1]), f'cache_{sample_direction}_{n:03}_x1', "./", domain=1)
 
         # Automatically delete old cache files
         for fb in ['f', 'b']:

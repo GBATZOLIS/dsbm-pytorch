@@ -14,7 +14,7 @@ from ..data.utils import save_image, to_uint8_tensor, normalize_tensor
 from ..data.metrics import PSNR, SSIM, FID  # , LPIPS
 from PIL import Image
 # matplotlib.use('Agg')
-
+from tqdm import tqdm
 
 DPI = 200
 
@@ -29,8 +29,9 @@ def make_gif(plot_paths, output_directory='./gif', gif_name='gif'):
                    loop=0)
 
 
+
 class Plotter(object):
-    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif'):
+    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif', is_SB=True):
         self.ipf = ipf
         self.args = args
         self.plot_level = self.args.plot_level
@@ -44,6 +45,7 @@ class Plotter(object):
 
         self.im_dir = im_dir
         self.gif_dir = gif_dir
+        self.is_SB = is_SB
 
         self.metrics_dict = {}
 
@@ -53,15 +55,18 @@ class Plotter(object):
         assert sampler in ['sde', 'ode']
         out = {}
         self.step = self.ipf.compute_current_step(i, n)
-        cache_filepath_npy = sorted(glob.glob(os.path.join(self.ipf.cache_dir, f"cache_{fb}_{n:03}.npy")))
+
+        if self.is_SB:
+            cache_filepath_npy = sorted(glob.glob(os.path.join(self.ipf.cache_dir, f"cache_{fb}_{n:03}.npy")))
         
         if datasets == 'all':
             datasets = ['train', 'test']
 
         if self.ipf.accelerator.is_main_process:
-            out['fb'] = fb
-            out['ipf'] = n
-            out['T'] = self.ipf.T
+            if self.is_SB:
+                out['fb'] = fb
+                out['ipf'] = n
+                out['T'] = self.ipf.T
 
         for dl_name, dl in self.ipf.save_dls_dict.items():
             if dl_name not in datasets:
@@ -83,7 +88,7 @@ class Plotter(object):
                                          mean_final=mean_final, var_final=var_final, num_steps=num_steps)
             '''
 
-            if use_cache and not self.ipf.cdsb:
+            if use_cache and not self.ipf.cdsb and self.is_SB:
                 print("Using cached data for training set evaluation")
                 fp = np.load(cache_filepath_npy[0], mmap_mode="r")
                 all_x = torch.from_numpy(fp[:self.ipf.test_npar])
@@ -106,8 +111,10 @@ class Plotter(object):
                     self.generate_sequence_joint(dl, i, n, fb, dl_name=dl_name, sampler=sampler, 
                                                 generate_npar=generate_npar, full_traj=False, num_steps=num_steps,
                                                 ode_method=ode_method, calc_energy=calc_energy, x_start=x_start)
+                
                 end_time = time.time()
                 print(f"Generating test dataset with {num_steps} integration steps takes {end_time - start_time} seconds to execute")
+                
 
                 if self.ipf.accelerator.is_main_process:
                     self.plot_sequence_joint(x_start[:self.args.plot_npar], y_start[:self.args.plot_npar],
@@ -116,6 +123,7 @@ class Plotter(object):
                                             mean_final=mean_final, var_final=var_final, num_steps=num_steps)
 
                 x_last = x_tot[-1]
+                print(f'size of test dataset: {x_last.size()}')
 
             x_tot = None
 
@@ -216,7 +224,8 @@ class Plotter(object):
                             x_tot, nfe = self.ipf.forward_sample_ode(batch_x, batch_y, permute=False)
                         else:
                             x_tot, nfe = self.ipf.forward_sample(batch_x, batch_y, permute=False, num_steps=num_steps)
-                        # x_last_true = final_batch_x
+                        x_last_true = final_batch_x
+
                     else:
                         if x_start is None:
                             batch_x = final_batch_x
@@ -239,24 +248,29 @@ class Plotter(object):
                             all_tsteps.append(tsteps)
                             all_energies.append(energies)
 
-                        # x_last_true = init_batch_x
+                        x_last_true = init_batch_x
 
                     stop = time.time()
                     times.append(stop - start)
 
                     if iters==0:
                         batchtime = stop - start
-                        print(f'It takes {batchtime} seconds to generate: {batch_x.size(0)} images')
+                        minutes, seconds = divmod(batchtime, 60)
+                        print(f'It takes {minutes} minutes and {seconds} seconds to generate: {batch_x.size(0)} images')
+
                         test_batch_size = batch_x.size(0)
-                        expected_time = generate_npar/test_batch_size*batchtime/3600
-                        print('It should take about: %.2f hours to generate the dataset.' % expected_time)
+                        expected_time_seconds = generate_npar / test_batch_size * batchtime
+                        expected_time_minutes, expected_time_remaining_seconds = divmod(expected_time_seconds, 60)
+                        expected_time_hours, expected_time_remaining_minutes = divmod(expected_time_minutes, 60)
+                        print(f'It should take about: {int(expected_time_hours)} hours, {int(expected_time_remaining_minutes)} minutes, and {int(expected_time_remaining_seconds)} seconds to generate the dataset.')
+
 
                     nfes.append(nfe)
 
                     gather_batch_x = self.ipf.accelerator.gather(batch_x)
                     if self.ipf.cdsb:
                         gather_batch_y = self.ipf.accelerator.gather(batch_y)
-                    gather_init_batch_x = self.ipf.accelerator.gather(init_batch_x)
+                    gather_init_batch_x = self.ipf.accelerator.gather(x_last_true)
 
                     if not full_traj:
                         x_tot = x_tot[:, -1:].contiguous()
@@ -391,9 +405,22 @@ class Plotter(object):
         return []
 
 class LatentPlotter(Plotter):
-    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif'):
-        super().__init__(ipf, args, im_dir=im_dir, gif_dir=gif_dir)
-    
+    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif', is_SB=True):
+        super().__init__(ipf, args, im_dir=im_dir, gif_dir=gif_dir, is_SB=is_SB)
+        self.num_plots_grid = 100
+        self.fid = FID().to(self.ipf.device)
+        self.fid_start = FID().to(self.ipf.device) #baseline
+
+    def flatten_tensor_if_needed(self, tensor):
+        if tensor.dim() > 2:  # Check if tensor is in a format more complex than (batch, d)
+            return tensor.view(tensor.size(0), -1)  # Flatten to (batch, -1)
+        return tensor
+
+    def save_image(self, tensor, name, dir, **kwargs):
+        fp = os.path.join(dir, f'{name}.png')
+        save_image(tensor[:self.num_plots_grid], fp, nrow=10)
+        return [fp]
+        
     def matrix_sqrt(self, mat):
         U, S, V = torch.svd(mat)
         return U @ torch.diag(torch.sqrt(S)) @ V.t()
@@ -401,35 +428,130 @@ class LatentPlotter(Plotter):
     def compute_wasserstein_distance(self, mean1, cov1, mean2, cov2):
         diff_mean = mean1 - mean2
         sqrt_cov1 = self.matrix_sqrt(cov1)
-        sqrt_cov2 = self.matrix_sqrt(cov2)
-        term1 = torch.norm(diff_mean, p=2)
+        #sqrt_cov2 = self.matrix_sqrt(cov2)
+        
+        # Squared Euclidean distance between the means
+        term1 = torch.norm(diff_mean, p=2)**2
+        
+        # The trace term in the Wasserstein distance formula
         term2 = torch.trace(cov1 + cov2 - 2 * self.matrix_sqrt(sqrt_cov1 @ cov2 @ sqrt_cov1))
+        
+        # Compute the Wasserstein distance
         w2_distance = term1 + term2
         return w2_distance.item()
+
+    def plot_sequence_joint(self, x_start, y_start, x_tot, x_init, data, i, n, fb, dl_name='train', sampler='sde', freq=None,
+                            mean_final=None, var_final=None, num_steps='default'):
+        if fb == 'f':
+            pass
+        elif fb == 'b':
+            x_tot_grid = x_tot[:, :self.num_plots_grid]
+            x_last, _ = self.ipf.vae_model.decode(x_tot_grid[-1].to(self.ipf.device))
+            x_start, _ = self.ipf.vae_model.decode(x_start[:self.num_plots_grid].to(self.ipf.device))
+            x_init, _ = self.ipf.vae_model.decode(x_init[:self.num_plots_grid].to(self.ipf.device))
+            
+            name = str(i) + '_' + fb + '_' + str(n)
+            im_dir = os.path.join(self.im_dir, name, self.prefix_fn(dl_name, sampler, num_steps))
+            os.makedirs(im_dir, exist_ok=True)
+
+            filename_grid = 'im_grid_start'
+            print(x_start.size())
+            filepath_grid_list = self.save_image(x_start.cpu(), filename_grid, im_dir)
+            print(filepath_grid_list)
+            self.ipf.save_logger.log_image(self.prefix_fn(dl_name, sampler, num_steps) + filename_grid, filepath_grid_list, step=self.step, fb=fb)
+
+            filename_grid = 'im_grid_last'
+            print(x_last.size())
+            filepath_grid_list = self.save_image(x_last.cpu(), filename_grid, im_dir)
+            self.ipf.save_logger.log_image(self.prefix_fn(dl_name, sampler, num_steps) + filename_grid, filepath_grid_list, step=self.step, fb=fb)
+
+            filename_grid = 'im_grid_data_x'
+            print(x_init.size())
+            filepath_grid_list = self.save_image(x_init.cpu(), filename_grid, im_dir)
+            self.ipf.save_logger.log_image(self.prefix_fn(dl_name, sampler, num_steps) + filename_grid, filepath_grid_list, step=self.step, fb=fb)
 
     def test_joint(self, x_start, y_start, x_last, x_init, i, n, fb, dl_name='train', sampler='sde', mean_final=None, var_final=None):
         out = {}
 
-        mean_x_last = torch.mean(x_last, dim=0)
-        cov_x_last = torch.cov(x_last.t())
+        # Create flattened copies for Wasserstein distance calculation
+        flat_x_start = self.flatten_tensor_if_needed(x_start)
+        flat_x_last = self.flatten_tensor_if_needed(x_last)
+
+        # Calculate means and covariances on the flattened tensors
+        mean_flat_x_start = torch.mean(flat_x_start, dim=0)
+        cov_flat_x_start = torch.cov(flat_x_start.t())
+        mean_flat_x_last = torch.mean(flat_x_last, dim=0)
+        cov_flat_x_last = torch.cov(flat_x_last.t())
 
         if fb == 'b':
             # Wasserstein-2 distance between x_last and x_init
-            mean_x_init = torch.mean(x_init, dim=0)
-            cov_x_init = torch.cov(x_init.t())
+            flat_x_init = self.flatten_tensor_if_needed(x_init)
+            mean_flat_x_init = torch.mean(flat_x_init, dim=0)
+            cov_flat_x_init = torch.cov(flat_x_init.t())
+
+            #compute the FID scores
+            dl_x_init = self.ipf.build_dataloader(x_init, batch_size=self.ipf.test_batch_size, shuffle=False, repeat=False)
+            dl_x_init = iter(dl_x_init)
+            dl_x_last = self.ipf.build_dataloader(x_last, batch_size=self.ipf.test_batch_size, shuffle=False, repeat=False)
+            dl_x_last = iter(dl_x_last)
+            dl_x_start = self.ipf.build_dataloader(x_start, batch_size=self.ipf.test_batch_size, shuffle=False, repeat=False)
+            dl_x_start = iter(dl_x_start)
+
+            # Calculate the total number of iterations needed
+            total_iters = (self.ipf.test_npar + self.ipf.test_batch_size - 1) // self.ipf.test_batch_size
+
+            print('Decoding of the latents and calculation of FID scores.')
+            with tqdm(total=total_iters, desc="Computing FID") as pbar:
+                iters = 0
+                while iters * self.ipf.test_batch_size < self.ipf.test_npar:
+                    try:
+                        x_init, x_last, x_start = next(dl_x_init), next(dl_x_last), next(dl_x_start)
+                        #x_init:ground truth latent
+                        #x_last:generated latent
+
+                        decoded_true, _ = self.ipf.vae_model.decode(x_init)
+                        decoded_last, _ = self.ipf.vae_model.decode(x_last)
+                        decoded_start, _ = self.ipf.vae_model.decode(x_start)
+
+                        uint8_x_last_true = to_uint8_tensor(decoded_true)
+                        uint8_x_last = to_uint8_tensor(decoded_last)
+                        self.fid.update(uint8_x_last, uint8_x_last_true)
+
+                        uint8_x_start = to_uint8_tensor(decoded_start)
+                        self.fid_start.update(uint8_x_start, uint8_x_last_true)
+
+                        # Update the progress bar
+                        pbar.update(1)
+                        iters += 1
+
+                    except StopIteration:
+                        break
+            
+            fid_result = self.fid.compute()
+            fid_start_result = self.fid_start.compute()
+
+            out['fid'] = fid_result
+            out['fid_start'] = fid_start_result
+
+            self.fid.reset()
+            self.fid_start.reset()
+
         elif fb == 'f':
             # Wasserstein-2 distance between x_last and N(0, I)
-            latent_dim = x_last.size(1)
-            mean_x_init = torch.zeros(latent_dim)
-            cov_x_init = torch.eye(latent_dim)
+            latent_dim = flat_x_last.size(1)
+            mean_flat_x_init = torch.zeros(latent_dim)
+            cov_flat_x_init = torch.eye(latent_dim)
 
-        out['wasserstein_distance'] = self.compute_wasserstein_distance(mean_x_last, cov_x_last, mean_x_init, cov_x_init)
+        # Wasserstein-2 distances calculation common for both 'b' and 'f' cases
+        out['wasserstein_distance_start'] = self.compute_wasserstein_distance(mean_flat_x_start, cov_flat_x_start, mean_flat_x_init, cov_flat_x_init)
+        out['wasserstein_distance'] = self.compute_wasserstein_distance(mean_flat_x_last, cov_flat_x_last, mean_flat_x_init, cov_flat_x_init)
+        
         return out
 
 class ImPlotter(Plotter):
 
-    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif', fid_feature=2048):
-        super().__init__(ipf, args, im_dir=im_dir, gif_dir=gif_dir)
+    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif', fid_feature=2048, is_SB=True):
+        super().__init__(ipf, args, im_dir=im_dir, gif_dir=gif_dir, is_SB=is_SB)
         self.num_plots_grid = 100
 
         if fid_feature == 2048:
@@ -524,8 +646,8 @@ class ImPlotter(Plotter):
 
 class DownscalerPlotter(Plotter):
 
-    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif'):
-        super().__init__(ipf, args, im_dir=im_dir, gif_dir=gif_dir)
+    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif', is_SB=True):
+        super().__init__(ipf, args, im_dir=im_dir, gif_dir=gif_dir, is_SB=is_SB)
         self.num_plots_grid = 16
         assert self.ipf.cdsb
 

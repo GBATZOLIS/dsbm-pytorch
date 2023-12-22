@@ -1,0 +1,21 @@
+# @package _global_
+
+Method: diffusion
+
+is_SB: False
+num_scales: 1000
+
+# schedule
+sde: vpsde
+
+#snr sde
+beta_schedule: linear 
+
+#ve sde
+sigma_min: 0.01
+sigma_max: 50
+
+#vp sde
+beta_min: 0.1
+beta_max: 20.
+

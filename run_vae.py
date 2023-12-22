@@ -3,8 +3,6 @@ import hydra
 import os
 from bridge.trainer_vae import train_vae, VAEHyperparameterTuner
 
-# Set the CUDA devices
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 def run(args):
     #tuner = VAEHyperparameterTuner(args)

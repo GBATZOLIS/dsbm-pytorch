@@ -2,7 +2,7 @@ import os
 import hydra
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = '0,1,2,3'
 
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg):
@@ -17,6 +17,9 @@ def main(cfg):
         return run(cfg)
     elif cfg.Method == "vae":
         from run_vae import run
+        return run(cfg)
+    elif cfg.Method == 'diffusion':
+        from run_diffusion import run
         return run(cfg)
     else: 
         raise NotImplementedError

@@ -16,5 +16,6 @@ first_coupling: ref
 dependent_coupling: None
 
 mean_match: False
+loss_type : L2
 loss_scale: True
 std_trick: False

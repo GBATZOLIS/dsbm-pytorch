@@ -1,0 +1,14 @@
+# @package _global_
+
+Model: LatentUNET
+model: 
+    ch: 128
+    ch_mult: [1, 2]
+    num_res_blocks: 2
+    attn_resolutions: [8, 4]
+    dropout: 0.0
+    resamp_with_conv: True
+    use_linear_attn: False
+    attn_type: vanilla
+    use_timestep: True
+    num_heads: 4

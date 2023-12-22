@@ -1,0 +1,21 @@
+# @package _global_
+
+defaults:
+  - override /method: dbdsb
+  - override /dataset: cifar10_vae
+  - override /vae: cifar10_deep
+
+run_name: coupled_deepvae_stochastic_decoder_sigma_0.2
+vae_checkpoint_path: /store/CIA/gb511/projects/sbvae/code/experiments/cifar10_latent/deep_vae_structured_latent/wandb/run-20231212_073911-w7krwxb2/files/vae_checkpoints/epoch=253--val_loss=8.276.ckpt
+
+first_num_iter: 500000
+num_iter: 200000
+cache_npar: 100000
+first_coupling: ind
+dependent_coupling: vae
+decoding: stochastic
+
+num_steps: 25
+gamma_min: 0.008
+gamma_max: 0.008
+test_num_steps_sequence: [10, 25]

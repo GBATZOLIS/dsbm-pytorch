@@ -1,0 +1,13 @@
+# @package _global_
+
+defaults:
+  - override /method: vae
+  - override /dataset: cifar10
+  - override /vae: cifar10_deep
+
+run_name: deep_vae_structured_latent
+name: ${Dataset}_latent
+
+vae_checkpoint_path: None
+kl_weight: 0.000001
+num_workers: 4

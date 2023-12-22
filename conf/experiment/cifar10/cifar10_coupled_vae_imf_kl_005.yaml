@@ -1,0 +1,21 @@
+# @package _global_
+
+defaults:
+  - override /method: dbdsb
+  - override /dataset: cifar10_vae
+  - override /vae: cifar10
+
+run_name: coupled_vae_stochastic_decoder_kl_0.05
+
+kl_weight: 0.05
+vae_checkpoint_path: /store/CIA/gb511/projects/sbvae/code/experiments/cifar10_vae_tuning/None/wandb/latest-run/files/vae_checkpoints/epoch=266--val_loss=13.489.ckpt
+num_steps: 25
+first_num_iter: 500000
+num_iter: 200000
+cache_npar: 100000
+first_coupling: ind
+dependent_coupling: vae
+decoding: stochastic
+gamma_min: 0.008
+gamma_max: 0.008
+test_num_steps_sequence: [5, 10, 20]

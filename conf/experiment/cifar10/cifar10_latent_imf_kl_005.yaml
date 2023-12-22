@@ -1,0 +1,38 @@
+# @package _global_
+
+defaults:
+  - override /model: MLP
+  - override /method: dbdsb
+  - override /dataset: cifar10_vae
+  - override /vae: cifar10
+
+run_name: latent_kl_0.05
+
+kl_weight: 0.05
+vae_checkpoint_path: /store/CIA/gb511/projects/sbvae/code/experiments/cifar10_vae_tuning/None/wandb/latest-run/files/vae_checkpoints/epoch=266--val_loss=13.489.ckpt
+
+first_coupling: ind
+gamma_min: 0.025
+gamma_max: 0.025
+test_num_steps_sequence: [20, 40]
+num_steps: 40
+first_num_iter: 500000
+num_iter: 200000
+validation_stride: 10000
+gif_stride: 100000
+cache_npar: 100000
+ema_rate: 0.9999
+space: latent
+
+model:
+  model_type : 'MLPSkipNet'
+  in_channels : ${latent_dim}
+  num_layers : 10
+  starting_skip_layer : 1
+  num_hid_channels : 2048
+  num_time_emb_channels : 64
+  use_norm : True
+  condition_bias : 1
+  dropout : 0
+  num_time_layers : 2
+  time_last_act : False

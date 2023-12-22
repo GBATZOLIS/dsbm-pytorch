@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from .data.utils import to_uint8_tensor
 from .runners import *
+from .runners.pl_EMA import pl_EMA
 from .runners.config_getters import get_vae_model, get_logger, get_checkpoint_callback, get_datasets, get_valid_test_datasets
 
 #new imports 
@@ -32,6 +33,7 @@ from pytorch_lightning.loggers import WandbLogger
 import pickle
 import re
 from multiprocessing import Process
+import copy 
 
 class MetricsCallback(Callback):
     def __init__(self, freq=1, feature=2048, metrics='all'):
@@ -69,6 +71,10 @@ class MetricsCallback(Callback):
                 getattr(self, metric).to(device)
 
     def on_validation_epoch_end(self, trainer, pl_module):
+        # Skip if currently in sanity check phase
+        if trainer.sanity_checking:
+            return
+
         if (trainer.current_epoch+1) % self.freq == 0:          
             self.move_metrics_to_device(pl_module.device)
 
@@ -96,7 +102,7 @@ class MetricsCallback(Callback):
                         self.fid_samples.update(to_uint8_tensor(samples), to_uint8_tensor(imgs))
 
                     # For reconstructions vs samples
-                    if 'fid_recon_vs_samples':
+                    if 'fid_recon_vs_samples' in self.metrics:
                         self.fid_recon_vs_samples.update(to_uint8_tensor(reconstructions), to_uint8_tensor(samples))
 
                 if 'fid_recon' in self.metrics:
@@ -124,12 +130,31 @@ class MetricsCallback(Callback):
                     batch = next(iter(dataloader))
                     batch = pl_module.handle_batch(batch)
                     grid_batch = torchvision.utils.make_grid(batch, nrow=int(np.sqrt(batch.size(0))), normalize=True, scale_each=True)
-                    pl_module.logger.experiment.log({"original": [wandb.Image(grid_batch)]})
+                    pl_module.logger.experiment.log({"step": trainer.global_step, "original": [wandb.Image(grid_batch)]})
+                    
                     batch = batch.to(pl_module.device)
                     reconstruction = pl_module.reconstruct(batch)
                     sample = reconstruction.cpu()
                     grid_batch = torchvision.utils.make_grid(sample, nrow=int(np.sqrt(sample.size(0))), normalize=True, scale_each=True)
-                    pl_module.logger.experiment.log({"reconstruction": [wandb.Image(grid_batch)]})
+                    pl_module.logger.experiment.log({"step": trainer.global_step, "reconstruction": [wandb.Image(grid_batch)]})
+
+                    # Visualize the latent space if the decoder has 'z_shape'
+                    if hasattr(pl_module.decoder, 'z_shape'):
+                        mean_z, log_var_z = pl_module.encode(batch)
+                        z = torch.randn_like(mean_z, device=pl_module.device) * torch.sqrt(log_var_z.exp()) + mean_z
+                        z = z.cpu()
+
+                        num_channels = z.size(1)
+
+                        if num_channels < 3:
+                            # Create a grid for the first channel
+                            grid = torchvision.utils.make_grid(z[:, 0:1, :, :], nrow=int(np.sqrt(batch.size(0))), normalize=True, scale_each=True)
+                        else:
+                            # Create a grid for the first three channels as an RGB image
+                            grid = torchvision.utils.make_grid(z[:, 0:3, :, :], nrow=int(np.sqrt(batch.size(0))), normalize=True, scale_each=True)
+                        
+                        pl_module.logger.experiment.log({"step": trainer.global_step, "latent_space": [wandb.Image(grid)]})
+
 
             pl_module.train()  # Set back to training mode
     
@@ -152,6 +177,28 @@ def prepare_data_loaders(args):
             'val':val_dataloader,
             'test':test_dataloader}
 
+class SimpleEMA(pl.Callback):
+    def __init__(self, decay):
+        super().__init__()
+        self.decay = decay
+        self.ema_weights = None
+
+    def on_train_start(self, trainer, pl_module):
+        # Initialize EMA weights with the model's weights at training start
+        self.ema_weights = copy.deepcopy(pl_module.state_dict())
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, unused=0):
+        # Update EMA weights after each training batch
+        with torch.no_grad():
+            model_state_dict = pl_module.state_dict()
+            for name, param in model_state_dict.items():
+                if name in self.ema_weights:
+                    self.ema_weights[name].mul_(self.decay).add_(param, alpha=1 - self.decay)
+
+    def on_save_checkpoint(self, trainer, pl_module, checkpoint):
+        # Replace the model state dict in the checkpoint with EMA weights
+        checkpoint['state_dict'] = self.ema_weights
+
 def train_vae(args):
     vae_model = get_vae_model(args)
 
@@ -169,16 +216,20 @@ def train_vae(args):
     early_stop_callback = EarlyStopping(monitor='val_loss',
                                         patience=args.early_stopping_patience)
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    fid_callback = MetricsCallback(freq=100)
+
+    metrics = ['lpips', 'visualisation']
+    fid_callback = MetricsCallback(freq=1, metrics=metrics)
 
     trainer = pl.Trainer(accelerator='gpu', devices=1,
                         max_epochs=100000,
                         logger=logger,
                         #resume_from_checkpoint=args.checkpoint,
+                        accumulate_grad_batches=args.accumulate_grad_batches,
                         callbacks=[checkpoint_callback,
                                    lr_monitor,
                                    early_stop_callback,
-                                   fid_callback
+                                   fid_callback,
+                                   pl_EMA(decay=0.999)
                                    ]
                         )
     
