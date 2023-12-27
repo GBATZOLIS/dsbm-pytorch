@@ -10,6 +10,8 @@ defaults:
   - vae: simple
   # - override hydra/launcher: submitit_slurm
 
+nodes: 1
+devices: 1
 phase: train #options=[train, test]
 space: observation #default=[observation, latent]
 name: ${Dataset}_${data.dataset}

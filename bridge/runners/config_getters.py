@@ -281,17 +281,17 @@ class VAE(pl.LightningModule):
         def training_step(self, batch, batch_idx):
             batch = self.handle_batch(batch)
             loss, rec_loss, kl_loss = self.compute_loss(batch)
-            self.log('train_loss', loss)
-            self.log('train_rec_loss', rec_loss)
-            self.log('train_kl_loss', kl_loss)
+            self.log('train_loss', loss, sync_dist=True)
+            self.log('train_rec_loss', rec_loss, sync_dist=True)
+            self.log('train_kl_loss', kl_loss, sync_dist=True)
             return loss
         
         def validation_step(self, batch, batch_idx):
             batch = self.handle_batch(batch)
             loss, rec_loss, kl_loss = self.compute_loss(batch)
-            self.log('val_loss', loss)
-            self.log('val_rec_loss', rec_loss)
-            self.log('val_kl_loss', kl_loss)
+            self.log('val_loss', loss, sync_dist=True)
+            self.log('val_rec_loss', rec_loss, sync_dist=True)
+            self.log('val_kl_loss', kl_loss, sync_dist=True)
             return loss
         
         def test_step(self, batch, batch_idx):

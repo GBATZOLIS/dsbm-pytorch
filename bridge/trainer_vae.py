@@ -14,6 +14,7 @@ from .runners.pl_EMA import pl_EMA
 from .runners.config_getters import get_vae_model, get_logger, get_checkpoint_callback, get_datasets, get_valid_test_datasets
 
 #new imports 
+from pytorch_lightning.loggers import TensorBoardLogger
 from torch.utils.data import random_split
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor
@@ -34,6 +35,8 @@ import pickle
 import re
 from multiprocessing import Process
 import copy 
+from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.utilities import rank_zero_only
 
 class MetricsCallback(Callback):
     def __init__(self, freq=1, feature=2048, metrics='all'):
@@ -71,6 +74,10 @@ class MetricsCallback(Callback):
                 getattr(self, metric).to(device)
 
     def on_validation_epoch_end(self, trainer, pl_module):
+        # Only execute on the main process
+        if trainer.global_rank != 0:
+            return
+
         # Skip if currently in sanity check phase
         if trainer.sanity_checking:
             return
@@ -81,7 +88,7 @@ class MetricsCallback(Callback):
             pl_module.eval()  # Set to evaluation mode
             with torch.no_grad():
                 lpips_scores = []
-                for i, batch in tqdm(enumerate(trainer.train_dataloader)):
+                for i, batch in tqdm(enumerate(trainer.val_dataloaders)):
                     batch = pl_module.handle_batch(batch)
                     imgs = batch.to(pl_module.device)
                     reconstructions = pl_module.reconstruct(imgs).detach()
@@ -105,55 +112,44 @@ class MetricsCallback(Callback):
                     if 'fid_recon_vs_samples' in self.metrics:
                         self.fid_recon_vs_samples.update(to_uint8_tensor(reconstructions), to_uint8_tensor(samples))
 
+                # Log the computed metrics
                 if 'fid_recon' in self.metrics:
                     fid_score_recon = self.fid_recon.compute()
-                    pl_module.logger.experiment.log({"fid_recon": fid_score_recon, "step": trainer.global_step})
-                    
-                
+                    pl_module.log("fid_recon", fid_score_recon, on_step=False, on_epoch=True)
+
                 if 'lpips' in self.metrics:
-                    avg_lpips_score = sum(lpips_scores) / len(lpips_scores)
-                    pl_module.logger.experiment.log({"lpips": avg_lpips_score, "step": trainer.global_step})
-                    
+                    avg_lpips_score = sum(lpips_scores) / len(lpips_scores) if lpips_scores else 0
+                    pl_module.log("lpips", avg_lpips_score, on_step=False, on_epoch=True)
+
                 if 'fid_samples' in self.metrics:
                     fid_score_samples = self.fid_samples.compute()
-                    pl_module.logger.experiment.log({"fid_samples": fid_score_samples, "step": trainer.global_step})
-                    trainer.callback_metrics["fid_samples"] = fid_score_samples
-                
+                    pl_module.log("fid_samples", fid_score_samples, on_step=False, on_epoch=True)
+
                 if 'fid_recon_vs_samples' in self.metrics:
                     fid_score_recon_vs_samples = self.fid_recon_vs_samples.compute()
-                    pl_module.logger.experiment.log({"fid_recon_vs_samples": fid_score_recon_vs_samples, "step": trainer.global_step})
-                    trainer.callback_metrics["fid_recon_vs_samples"] = fid_score_recon_vs_samples
+                    pl_module.log("fid_recon_vs_samples", fid_score_recon_vs_samples, on_step=False, on_epoch=True)
 
-                # Visualization
                 if 'visualisation' in self.metrics:
-                    dataloader = trainer.train_dataloader
+                    # Using validation dataloader for consistent batch visualization
+                    dataloader = trainer.val_dataloaders  # Assuming you have at least one validation dataloader
                     batch = next(iter(dataloader))
                     batch = pl_module.handle_batch(batch)
-                    grid_batch = torchvision.utils.make_grid(batch, nrow=int(np.sqrt(batch.size(0))), normalize=True, scale_each=True)
-                    pl_module.logger.experiment.log({"step": trainer.global_step, "original": [wandb.Image(grid_batch)]})
-                    
-                    batch = batch.to(pl_module.device)
-                    reconstruction = pl_module.reconstruct(batch)
-                    sample = reconstruction.cpu()
-                    grid_batch = torchvision.utils.make_grid(sample, nrow=int(np.sqrt(sample.size(0))), normalize=True, scale_each=True)
-                    pl_module.logger.experiment.log({"step": trainer.global_step, "reconstruction": [wandb.Image(grid_batch)]})
 
-                    # Visualize the latent space if the decoder has 'z_shape'
+                    # Original Images
+                    grid_original = torchvision.utils.make_grid(batch, nrow=int(np.sqrt(batch.size(0))), normalize=True, scale_each=True)
+                    pl_module.logger.experiment.add_image("original_images", grid_original, global_step=trainer.global_step)
+
+                    # Reconstructed Images
+                    reconstruction = pl_module.reconstruct(batch.to(pl_module.device))
+                    grid_reconstruction = torchvision.utils.make_grid(reconstruction.cpu(), nrow=int(np.sqrt(reconstruction.size(0))), normalize=True, scale_each=True)
+                    pl_module.logger.experiment.add_image("reconstructed_images", grid_reconstruction, global_step=trainer.global_step)
+
+                    # Visualize Latent Space
                     if hasattr(pl_module.decoder, 'z_shape'):
-                        mean_z, log_var_z = pl_module.encode(batch)
-                        z = torch.randn_like(mean_z, device=pl_module.device) * torch.sqrt(log_var_z.exp()) + mean_z
-                        z = z.cpu()
-
-                        num_channels = z.size(1)
-
-                        if num_channels < 3:
-                            # Create a grid for the first channel
-                            grid = torchvision.utils.make_grid(z[:, 0:1, :, :], nrow=int(np.sqrt(batch.size(0))), normalize=True, scale_each=True)
-                        else:
-                            # Create a grid for the first three channels as an RGB image
-                            grid = torchvision.utils.make_grid(z[:, 0:3, :, :], nrow=int(np.sqrt(batch.size(0))), normalize=True, scale_each=True)
-                        
-                        pl_module.logger.experiment.log({"step": trainer.global_step, "latent_space": [wandb.Image(grid)]})
+                        mean_z, _ = pl_module.encode(batch.to(pl_module.device))
+                        # Assuming mean_z can be converted into an image grid
+                        grid_latent = torchvision.utils.make_grid(mean_z.cpu(), nrow=int(np.sqrt(mean_z.size(0))), normalize=True, scale_each=True)
+                        pl_module.logger.experiment.add_image("latent_space", grid_latent, global_step=trainer.global_step)
 
 
             pl_module.train()  # Set back to training mode
@@ -177,6 +173,77 @@ def prepare_data_loaders(args):
             'val':val_dataloader,
             'test':test_dataloader}
 
+def get_vae_checkpoint_callback():
+    if wandb.run is not None:
+        dirpath = os.path.join(wandb.run.dir, 'vae_checkpoints')
+        checkpoint_callback = ModelCheckpoint(
+        dirpath=dirpath,
+        monitor='val_loss',
+        filename='{epoch}--{val_loss:.3f}',
+        save_last=True,
+        save_top_k=3
+    )
+        return checkpoint_callback
+    return None
+
+def get_metrics_callback():
+    metrics = ['lpips', 'visualisation']
+    fid_callback = MetricsCallback(freq=1, metrics=metrics)
+    return fid_callback
+
+def train_vae(args):
+    vae_model = get_vae_model(args)
+
+    dataloaders = prepare_data_loaders(args)
+    #print(dataloaders)
+    train_dataloader = dataloaders['train']
+    val_dataloader = dataloaders['val']
+
+    args.run_name = f'kl_{args.kl_weight}'
+    print(f'KL weight: {args.kl_weight}')
+    print(f'Latent dimension: {args.latent_dim}')
+    
+    #logger = get_logger(args, 'logs')
+    
+    #try a tensorboard logger
+    current_dir = os.getcwd()
+    print(f"Current Directory: {current_dir}")
+    tensorboard_logger = TensorBoardLogger(save_dir=current_dir, name="tb_logs")
+
+    #checkpoint_callback = get_checkpoint_callback(logger)
+    #checkpoint_callback = get_vae_checkpoint_callback()
+
+    fid_callback = get_metrics_callback()
+
+    early_stop_callback = EarlyStopping(monitor='val_loss',
+                                        patience=args.early_stopping_patience)
+    lr_monitor = LearningRateMonitor(logging_interval='step')
+    
+
+    callbacks = [
+        lr_monitor,
+        early_stop_callback,
+        pl_EMA(decay=0.999),
+        fid_callback
+    ]
+    
+    # Add the checkpoint callback only if it's not None
+    #if checkpoint_callback is not None:
+    #    callbacks.append(checkpoint_callback)
+    
+    #if fid_callback is not None:
+    #    callbacks.append(fid_callback)
+
+    trainer = pl.Trainer(accelerator='gpu', devices=args.devices, strategy='ddp',
+                        max_epochs=100000,
+                        logger=tensorboard_logger,
+                        #resume_from_checkpoint=args.checkpoint,
+                        accumulate_grad_batches=args.accumulate_grad_batches,
+                        callbacks=callbacks
+                        )
+    
+    trainer.fit(vae_model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+
 class SimpleEMA(pl.Callback):
     def __init__(self, decay):
         super().__init__()
@@ -198,42 +265,6 @@ class SimpleEMA(pl.Callback):
     def on_save_checkpoint(self, trainer, pl_module, checkpoint):
         # Replace the model state dict in the checkpoint with EMA weights
         checkpoint['state_dict'] = self.ema_weights
-
-def train_vae(args):
-    vae_model = get_vae_model(args)
-
-    dataloaders = prepare_data_loaders(args)
-    #print(dataloaders)
-    train_dataloader = dataloaders['train']
-    val_dataloader = dataloaders['val']
-
-    args.run_name = f'kl_{args.kl_weight}'
-    print(f'KL weight: {args.kl_weight}')
-    print(f'Latent dimension: {args.latent_dim}')
-    
-    logger = get_logger(args, 'logs')
-    checkpoint_callback = get_checkpoint_callback(logger)
-    early_stop_callback = EarlyStopping(monitor='val_loss',
-                                        patience=args.early_stopping_patience)
-    lr_monitor = LearningRateMonitor(logging_interval='step')
-
-    metrics = ['lpips', 'visualisation']
-    fid_callback = MetricsCallback(freq=1, metrics=metrics)
-
-    trainer = pl.Trainer(accelerator='gpu', devices=1,
-                        max_epochs=100000,
-                        logger=logger,
-                        #resume_from_checkpoint=args.checkpoint,
-                        accumulate_grad_batches=args.accumulate_grad_batches,
-                        callbacks=[checkpoint_callback,
-                                   lr_monitor,
-                                   early_stop_callback,
-                                   fid_callback,
-                                   pl_EMA(decay=0.999)
-                                   ]
-                        )
-    
-    trainer.fit(vae_model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
 class VAEHyperparameterTuner:
     def __init__(self, args):

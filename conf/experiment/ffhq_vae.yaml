@@ -5,14 +5,18 @@ defaults:
   - override /dataset: ffhq
   - override /vae: ffhq
 
-run_name: vae
+run_name: vae_multigpu_tb
 name: ${Dataset}_latent
+devices: 2
 
 paths:
   data_dir_name: /store/CIA/gb511/datasets
 
-accumulate_grad_batches: 2
+accumulate_grad_batches: 1
 transfer: False #set it to True when you train a SB between either in the observation space or in the latent space
 batch_size: 8
 vae_checkpoint_path: None
 num_workers: 4
+
+data:
+  percentage_use: 2
