@@ -442,6 +442,7 @@ class DiffusionModelTrainer:
         else:
             mean_final = mean_final.to(init_batch_x.device)
             std_final = std_final.to(init_batch_x.device)
+
             final_batch_x = mean_final + std_final * torch.randn_like(init_batch_x)
 
         mean_final = mean_final.to(init_batch_x.device)

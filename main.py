@@ -2,7 +2,7 @@ import os
 import hydra
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '1,2,3,4'
+os.environ["CUDA_VISIBLE_DEVICES"] = '0,2,3'
 
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg):

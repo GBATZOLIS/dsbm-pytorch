@@ -1,0 +1,31 @@
+# @package _global_
+
+defaults:
+  - override /method: diffusion
+  - override /dataset: ffhq
+  - override /vae: ffhq
+
+run_name: latent_diffusion
+name: ${Dataset}_latent
+
+paths:
+  data_dir_name: /store/CIA/gb511/datasets
+
+vae_checkpoint_path: /store/CIA/gb511/projects/sbvae/code/experiments/ffhq_latent/vae/wandb/latest-run/files/vae_checkpoints/epoch=21--val_loss=32.996.ckpt
+
+test_num_steps_sequence: [128]
+num_steps: 128
+batch_size: 64
+first_num_iter: 2000000
+validation_stride: 20000
+gif_stride: 200000
+cache_npar: 100000
+ema_rate: 0.9999
+space: latent
+
+data:
+  percentage_use: 100
+
+model:
+  channel_mult: [1, 2, 2, 2]
+  attention_resolutions: [16]

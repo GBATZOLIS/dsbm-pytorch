@@ -99,7 +99,9 @@ class IPF_DBDSB:
 
         # get data
         self.build_dataloaders()
-        self.compute_normalizing_constants()
+
+        if self.args.space == 'latent':
+            self.compute_normalizing_constants()
 
         if self.args.sde == "ve":
             self.langevin = DBDSB_VE(self.sigma, self.num_steps, self.timesteps, self.shape_x, self.shape_y, self.args.first_coupling, self.args.mean_match)
@@ -663,6 +665,8 @@ class IPF_DBDSB:
             else:
                 mean_final = mean_final.to(init_batch_x.device)
                 std_final = std_final.to(init_batch_x.device)
+                #print(mean_final.size())
+                #print(init_batch_x.size())
                 final_batch_x = mean_final + std_final * torch.randn_like(init_batch_x)
 
         mean_final = mean_final.to(init_batch_x.device)

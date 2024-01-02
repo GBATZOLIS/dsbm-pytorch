@@ -242,7 +242,7 @@ def train_vae(args):
                         callbacks=callbacks
                         )
     
-    trainer.fit(vae_model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+    trainer.fit(vae_model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader, ckpt_path=args.vae_checkpoint_path)
 
 class SimpleEMA(pl.Callback):
     def __init__(self, decay):

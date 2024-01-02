@@ -125,9 +125,9 @@ class ImageDataset(Dataset):
         if self.random_flip and random.random() < 0.5:
             arr = np.ascontiguousarray(arr[:, ::-1])
 
-        out_dict = {}
+        out_dict = []
         if self.local_classes is not None:
-            out_dict["y"] = np.array(self.local_classes[idx], dtype=np.int64)
+            out_dict = np.array(self.local_classes[idx], dtype=np.int64)
         return np.transpose(arr, [2, 0, 1]), out_dict
 
 

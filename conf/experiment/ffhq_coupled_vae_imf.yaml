@@ -1,0 +1,28 @@
+# @package _global_
+
+defaults:
+  - override /method: dbdsb
+  - override /dataset: ffhq
+  - override /vae: ffhq
+
+run_name: coupled_vae_sigma_0.2
+vae_checkpoint_path: /store/CIA/gb511/projects/sbvae/code/experiments/ffhq_latent/vae/wandb/latest-run/files/vae_checkpoints/epoch=21--val_loss=32.996.ckpt
+
+paths:
+  data_dir_name: /store/CIA/gb511/datasets
+
+first_num_iter: 500000
+num_iter: 200000
+cache_npar: 100000
+first_coupling: ind
+dependent_coupling: vae
+decoding: stochastic
+batch_size: 4
+
+num_steps: 25
+gamma_min: 0.008
+gamma_max: 0.008
+test_num_steps_sequence: [10, 25]
+
+data:
+  percentage_use: 2
