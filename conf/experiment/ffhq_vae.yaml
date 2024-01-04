@@ -15,7 +15,7 @@ paths:
 accumulate_grad_batches: 1
 transfer: False #set it to True when you train a SB between either in the observation space or in the latent space
 batch_size: 32
-vae_checkpoint_path: None
+vae_checkpoint_path: /home/gb511/rds_work/projects/sbvae/code/experiments/ffhq_latent/vae_multigpu_tb/tb_logs/version_0/checkpoints/epoch=134-step=132975.ckpt
 num_workers: 8
 
 data:

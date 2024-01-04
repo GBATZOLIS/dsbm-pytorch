@@ -31,7 +31,7 @@ def make_gif(plot_paths, output_directory='./gif', gif_name='gif'):
 
 
 class Plotter(object):
-    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif', is_SB=True):
+    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif', is_SB=True, test=True):
         self.ipf = ipf
         self.args = args
         self.plot_level = self.args.plot_level
@@ -46,6 +46,7 @@ class Plotter(object):
         self.im_dir = im_dir
         self.gif_dir = gif_dir
         self.is_SB = is_SB
+        self.test = test
 
         self.metrics_dict = {}
 
@@ -100,7 +101,7 @@ class Plotter(object):
 
             else:
                 fbs = ['b', 'f'] if self.args.space == 'latent' else ['b']
-                if fb in fbs and dl_name == 'train':
+                if fb in fbs and dl_name == 'train' and self.test:
                     generate_npar = self.ipf.test_npar
                 else:
                     generate_npar = min(self.ipf.test_npar, self.ipf.plot_npar)
@@ -127,7 +128,7 @@ class Plotter(object):
 
             x_tot = None
 
-            if generate_npar == self.ipf.test_npar:
+            if generate_npar == self.ipf.test_npar and self.test:
                 test_results = self.test_joint(x_start[:generate_npar], y_start[:generate_npar], 
                                             x_last[:generate_npar], x_init[:generate_npar],
                                             i, n, fb, dl_name=dl_name, sampler=sampler,
@@ -405,8 +406,8 @@ class Plotter(object):
         return []
 
 class LatentPlotter(Plotter):
-    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif', is_SB=True):
-        super().__init__(ipf, args, im_dir=im_dir, gif_dir=gif_dir, is_SB=is_SB)
+    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif', is_SB=True, test=True):
+        super().__init__(ipf, args, im_dir=im_dir, gif_dir=gif_dir, is_SB=is_SB, test=test)
         self.num_plots_grid = 100
         self.fid = FID().to(self.ipf.device)
         self.fid_start = FID().to(self.ipf.device) #baseline
@@ -440,16 +441,40 @@ class LatentPlotter(Plotter):
         w2_distance = term1 + term2
         return w2_distance.item()
 
+    def decode_with_dataloader(self, tensor, batch_size):
+        dataloader = self.ipf.build_dataloader(tensor, batch_size=batch_size, shuffle=False, drop_last=False, repeat=False)
+        decoded_batches = []
+
+        for batch in dataloader:
+            decoded_batch, _ = self.ipf.vae_model.decode(batch.to(self.ipf.device))
+            decoded_batches.append(decoded_batch.cpu())
+
+        return torch.cat(decoded_batches, dim=0)
+
     def plot_sequence_joint(self, x_start, y_start, x_tot, x_init, data, i, n, fb, dl_name='train', sampler='sde', freq=None,
                             mean_final=None, var_final=None, num_steps='default'):
         if fb == 'f':
             pass
         elif fb == 'b':
-            x_tot_grid = x_tot[:, :self.num_plots_grid]
-            x_last, _ = self.ipf.vae_model.decode(x_tot_grid[-1].to(self.ipf.device))
-            x_start, _ = self.ipf.vae_model.decode(x_start[:self.num_plots_grid].to(self.ipf.device))
-            x_init, _ = self.ipf.vae_model.decode(x_init[:self.num_plots_grid].to(self.ipf.device))
-            
+            current_batch_size = self.num_plots_grid
+            decoded_successfully = False
+
+            while not decoded_successfully and current_batch_size > 0:
+                try:
+                    x_last = self.decode_with_dataloader(x_tot[:, :self.num_plots_grid][-1], current_batch_size)
+                    x_start = self.decode_with_dataloader(x_start[:self.num_plots_grid], current_batch_size)
+                    x_init = self.decode_with_dataloader(x_init[:self.num_plots_grid], current_batch_size)
+                    decoded_successfully = True
+                except RuntimeError as e:
+                    if 'out of memory' in str(e):
+                        print(f"Caught OOM error with batch size {current_batch_size}, reducing by half.")
+                        current_batch_size //= 2  # Reduce the batch size by half
+                    else:
+                        raise e  # Re-raise if it's not an OOM error
+
+            if not decoded_successfully:
+                raise RuntimeError("Unable to decode: continuous OOM errors.")
+
             name = str(i) + '_' + fb + '_' + str(n)
             im_dir = os.path.join(self.im_dir, name, self.prefix_fn(dl_name, sampler, num_steps))
             os.makedirs(im_dir, exist_ok=True)
@@ -550,8 +575,8 @@ class LatentPlotter(Plotter):
 
 class ImPlotter(Plotter):
 
-    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif', fid_feature=2048, is_SB=True):
-        super().__init__(ipf, args, im_dir=im_dir, gif_dir=gif_dir, is_SB=is_SB)
+    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif', fid_feature=2048, is_SB=True, test=True):
+        super().__init__(ipf, args, im_dir=im_dir, gif_dir=gif_dir, is_SB=is_SB, test=test)
         self.num_plots_grid = 100
 
         if fid_feature == 2048:
@@ -646,8 +671,8 @@ class ImPlotter(Plotter):
 
 class DownscalerPlotter(Plotter):
 
-    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif', is_SB=True):
-        super().__init__(ipf, args, im_dir=im_dir, gif_dir=gif_dir, is_SB=is_SB)
+    def __init__(self, ipf, args, im_dir = './im', gif_dir='./gif', is_SB=True, test=True):
+        super().__init__(ipf, args, im_dir=im_dir, gif_dir=gif_dir, is_SB=is_SB, test=test)
         self.num_plots_grid = 16
         assert self.ipf.cdsb
 

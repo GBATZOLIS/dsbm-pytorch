@@ -1,11 +1,11 @@
 # @package _global_
 
 defaults:
-  - override /method: diffusion
+  - override /method: dbdsb
   - override /dataset: ffhq
   - override /vae: ffhq
 
-run_name: latent_diffusion
+run_name: latent_imf
 name: ${Dataset}_latent
 
 paths:
@@ -14,13 +14,17 @@ paths:
 vae_checkpoint_path: /home/gb511/rds_work/projects/sbvae/code/experiments/ffhq_latent/vae_multigpu_tb/tb_logs/version_1/checkpoints/epoch=263-step=260040.ckpt #/store/CIA/gb511/projects/sbvae/code/experiments/ffhq_latent/vae/wandb/latest-run/files/vae_checkpoints/epoch=263-step=260040.ckpt
 
 test_during_training: False
-test_num_steps_sequence: [256]
-num_steps: 256
+first_coupling: ind
+gamma_min: 0.0078125
+gamma_max: 0.0078125
+test_num_steps_sequence: [128]
+num_steps: 128
 batch_size: 128
 test_batch_size: 128
-first_num_iter: 2000000
+first_num_iter: 800000
+num_iter: 250000
 validation_stride: 20000
-gif_stride: 30000 #calculates FID or just plots samples
+gif_stride: 30000
 cache_npar: 100000
 ema_rate: 0.9999
 space: latent

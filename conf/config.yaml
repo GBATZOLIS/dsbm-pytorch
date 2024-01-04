@@ -27,6 +27,7 @@ CSV_log_dir: ./
 
 # Training
 optimizer: Adam
+test_during_training: True
 test_batch_size: 1000
 plot_level: 1
 cache_refresh_stride: ${num_iter}

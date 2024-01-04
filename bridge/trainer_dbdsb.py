@@ -1008,6 +1008,10 @@ class IPF_DBDSB:
             print('The directory for the last checkpoint is not found. No .ckpt file transfer.')
 
     def find_last_ckpt(self):
+        # Check if the checkpoint directory exists
+        if not os.path.exists(self.ckpt_dir_load):
+            return False, 1, 'b', 1, None, None
+
         self.copy_last_ckpt_files()
         files = [f for f in os.listdir(self.ckpt_dir_load) if f.endswith('.ckpt')]
         print(sorted(files))

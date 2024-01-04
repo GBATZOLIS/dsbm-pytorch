@@ -28,16 +28,17 @@ def worker_init_fn(worker_id):
 
 def get_plotter(runner, args, fid_feature=2048):
     is_SB = args.get('is_SB', True)
+    test_during_training = args.get('test_during_training', True)
     if args.space == 'latent':
-        return LatentPlotter(runner, args, is_SB=is_SB)
+        return LatentPlotter(runner, args, is_SB=is_SB, test=test_during_training)
     else:
         dataset_tag = getattr(args, DATASET)
         if dataset_tag in [DATASET_MNIST, DATASET_EMNIST, DATASET_CIFAR10]:
-            return ImPlotter(runner, args, fid_feature=fid_feature, is_SB=is_SB)
+            return ImPlotter(runner, args, fid_feature=fid_feature, is_SB=is_SB, test=test_during_training)
         elif dataset_tag in [DATASET_DOWNSCALER_LOW, DATASET_DOWNSCALER_HIGH]:
-            return DownscalerPlotter(runner, args, is_SB=is_SB)
+            return DownscalerPlotter(runner, args, is_SB=is_SB, test=test_during_training)
         else:
-            return Plotter(runner, args, is_SB=is_SB)
+            return Plotter(runner, args, is_SB=is_SB, test=test_during_training)
 
 
 # Model
@@ -338,6 +339,53 @@ def get_vae_model(args):
     vae_model = VAE(args)
     return vae_model
 
+
+def create_stochastic_vae_encodings_dataset_new(vae_model, base_dataset, initial_batch_size, dataset='train'):
+    current_batch_size = initial_batch_size
+    encoded_first_batch = False
+
+    # Try to encode the first batch and reduce the batch size on OOM error
+    while not encoded_first_batch and current_batch_size > 0:
+        try:
+            first_batch_loader = DataLoader(base_dataset, batch_size=current_batch_size, shuffle=False)
+            first_batch = next(iter(first_batch_loader))
+            first_batch = vae_model.handle_batch(first_batch)
+            first_batch = first_batch.to(vae_model.device)
+            vae_model.encode(first_batch)
+            encoded_first_batch = True
+        except RuntimeError as e:
+            if 'out of memory' in str(e):
+                print(f"Caught OOM error with batch size {current_batch_size}, reducing by half.")
+                current_batch_size //= 2
+            else:
+                raise e
+
+    if not encoded_first_batch:
+        raise RuntimeError("Unable to encode the first batch: continuous OOM errors.")
+
+    print(f'batchsize for encoding the input data: {current_batch_size}')
+    
+    # Proceed with the rest of the function using the determined batch size
+    stochastic_encodings = []
+    dataloader = DataLoader(base_dataset, batch_size=current_batch_size, shuffle=False)
+    pbar = tqdm(total=len(base_dataset), desc=f"Encoding {dataset} dataset")
+
+    with torch.no_grad():
+        for i, batch in enumerate(dataloader):
+            batch = vae_model.handle_batch(batch)
+            batch = batch.to(vae_model.device)
+            mean_z, log_var_z = vae_model.encode(batch)
+
+            # Concatenate mean and log variance if applicable
+            concatenated = torch.cat((mean_z, log_var_z), dim=1) if isinstance(log_var_z, torch.Tensor) else mean_z
+            stochastic_encodings.extend(concatenated.cpu().numpy())
+
+            pbar.update(current_batch_size)
+
+    pbar.close()
+    return stochastic_encodings
+
+
 def create_stochastic_vae_encodings_dataset(vae_model, base_dataset, batch_size, dataset='train'):
     stochastic_encodings = []
     dataloader = DataLoader(base_dataset, batch_size=batch_size, shuffle=False)
@@ -357,21 +405,6 @@ def create_stochastic_vae_encodings_dataset(vae_model, base_dataset, batch_size,
             else:
                 assert vae_model.config.variational==False
                 concatenated = mean_z
-
-            '''
-            #check reconstruction
-            split_index = concatenated.size(1) // 2
-            mean, log_var = concatenated[:, :split_index], concatenated[:, split_index:]
-            std = torch.exp(0.5 * log_var)
-            eps = torch.randn_like(std)
-            sampled_z = eps.mul(std).add_(mean)
-            decoded_image, _ = vae_model.decode(sampled_z)
-            # Compute the L2 distance for each image in the batch
-            l2_distances = torch.sqrt(torch.sum((batch - decoded_image) ** 2, dim=[1, 2, 3]))
-            # Compute the average L2 distance over all images in the batch
-            average_l2_distance = torch.mean(l2_distances)
-            print(f'average_l2_distance: {average_l2_distance.item()}')
-            '''
 
             stochastic_encodings.extend(concatenated.cpu().numpy())
 
