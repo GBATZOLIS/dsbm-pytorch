@@ -1,0 +1,49 @@
+# @package _global_
+
+variational: False
+latent_dim : 3072
+kl_weight: 0.001 #if you set decoding to stochastic, make sure to set the training kl_weight correctly. This is the beta value of the β-VAE.
+
+#settings for tuning the kl weight parameter
+tuning_gpus: [0] #gpus used for tuning the kl_weight using the parallel optuna study.
+kl_weight_min: 1e-4
+kl_weight_max: 1
+vae_tuning_freq : 50
+n_trials: 5
+tuning_fid_feature: 2048
+
+
+decoding: deterministic
+accumulate_grad_batches: 1
+vae_checkpoint_path : None
+
+encoder:
+  name: compressor_encoder
+  resolution: ${data.image_size}
+  z_channels: 3
+
+decoder:
+  name: deep_decoder
+  ch: 128
+  out_ch: ${data.channels}
+  ch_mult: [1, 1, 2, 4]
+  num_res_blocks: 2
+  attn_resolutions: []
+  dropout: 0.
+  resamp_with_conv: True
+  in_channels: ${data.channels}
+  resolution: ${data.image_size}
+  z_channels: 3
+  give_pre_end: False
+  tanh_out: False
+  use_linear_attn: False
+  attn_type: vanilla
+
+vae_optim:
+  lr: 5e-5
+  use_scheduler: True
+  sch_factor: 0.9
+  sch_patience: 100
+  sch_min_lr: 1e-6
+
+early_stopping_patience: 200

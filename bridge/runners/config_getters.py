@@ -33,7 +33,7 @@ def get_plotter(runner, args, fid_feature=2048):
         return LatentPlotter(runner, args, is_SB=is_SB, test=test_during_training)
     else:
         dataset_tag = getattr(args, DATASET)
-        if dataset_tag in [DATASET_MNIST, DATASET_EMNIST, DATASET_CIFAR10]:
+        if dataset_tag in [DATASET_MNIST, DATASET_EMNIST, DATASET_CIFAR10, 'ffhq']:
             return ImPlotter(runner, args, fid_feature=fid_feature, is_SB=is_SB, test=test_during_training)
         elif dataset_tag in [DATASET_DOWNSCALER_LOW, DATASET_DOWNSCALER_HIGH]:
             return DownscalerPlotter(runner, args, is_SB=is_SB, test=test_during_training)
@@ -192,6 +192,7 @@ class VAE(pl.LightningModule):
                 'simple_decoder': ConvNetDecoder,
                 'deep_encoder': DeepEncoder,
                 'deep_decoder': DeepDecoder,
+                'compressor_encoder': CompressorEncoder
             }
             self.encoder = net_options[config.encoder.name](config)
             self.decoder = net_options[config.decoder.name](config)

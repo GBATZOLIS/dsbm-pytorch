@@ -5,11 +5,11 @@ defaults:
   - override /dataset: ffhq
   - override /vae: ffhq
 
-run_name: coupled_vae_sigma_0.2
-vae_checkpoint_path: /home/gb511/rds_work/projects/sbvae/code/experiments/ffhq_latent/vae_multigpu_tb/tb_logs/version_1/checkpoints/epoch=263-step=260040.ckpt #/store/CIA/gb511/projects/sbvae/code/experiments/ffhq_latent/vae/wandb/latest-run/files/vae_checkpoints/epoch=263-step=260040.ckpt
+run_name: coupled_vae_sigma_0.2_4gpus
+vae_checkpoint_path: /store/CIA/gb511/projects/sbvae/code/experiments/ffhq_latent/vae/wandb/latest-run/files/vae_checkpoints/epoch=263-step=260040.ckpt #/home/gb511/rds_work/projects/sbvae/code/experiments/ffhq_latent/vae_multigpu_tb/tb_logs/version_1/checkpoints/epoch=263-step=260040.ckpt 
 
 paths:
-  data_dir_name: /home/gb511/rds_work/datasets #/store/CIA/gb511/datasets
+  data_dir_name: /store/CIA/gb511/datasets #/home/gb511/rds_work/datasets 
 
 test_during_training: False
 first_num_iter: 600000
@@ -20,8 +20,8 @@ cache_npar: 70000
 first_coupling: ind
 dependent_coupling: vae
 decoding: stochastic
-batch_size: 32
-test_batch_size: 64
+batch_size: 16
+test_batch_size: 32
 
 num_steps: 25
 gamma_min: 0.008
@@ -29,4 +29,4 @@ gamma_max: 0.008
 test_num_steps_sequence: [10, 25]
 
 data:
-  percentage_use: 100
+  percentage_use: 5
