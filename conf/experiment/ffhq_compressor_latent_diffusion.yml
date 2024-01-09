@@ -1,0 +1,37 @@
+# @package _global_
+
+defaults:
+  - override /method: diffusion
+  - override /dataset: ffhq
+  - override /vae: ffhq_compressed
+
+run_name: compressed_latent_diffusion
+name: ${Dataset}_latent
+
+paths:
+  data_dir_name: /store/CIA/gb511/datasets #/home/gb511/rds_work/datasets 
+
+vae_checkpoint_path: /store/CIA/gb511/projects/sbvae/code/experiments/ffhq_latent/compressor_vae/tb_logs/version_0/checkpoints/epoch=6-step=13783.ckpt #/home/gb511/rds_work/projects/sbvae/code/experiments/ffhq_latent/vae_multigpu_tb/tb_logs/version_1/checkpoints/epoch=263-step=260040.ckpt #/store/CIA/gb511/projects/sbvae/code/experiments/ffhq_latent/vae/wandb/latest-run/files/vae_checkpoints/epoch=263-step=260040.ckpt
+
+test_during_training: False
+test_num_steps_sequence: [256]
+num_steps: 256
+batch_size: 128
+test_batch_size: 128
+first_num_iter: 2000000
+validation_stride: 20000
+gif_stride: 50000 #calculates FID or just plots samples
+cache_npar: 100000
+ema_rate: 0.9999
+space: latent
+
+data:
+  percentage_use: 100
+
+lr: 9.6e-5
+model:
+  num_channels: 128
+  num_heads: 1
+  channel_mult: [1, 2, 4]
+  attention_resolutions: [32, 16, 8]
+  dropout: 0.

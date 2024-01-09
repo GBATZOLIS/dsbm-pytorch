@@ -173,18 +173,18 @@ def prepare_data_loaders(args):
             'val':val_dataloader,
             'test':test_dataloader}
 
-def get_vae_checkpoint_callback():
-    if wandb.run is not None:
-        dirpath = os.path.join(wandb.run.dir, 'vae_checkpoints')
-        checkpoint_callback = ModelCheckpoint(
+def get_vae_checkpoint_callback(tensorboard_logger):
+    # Construct the directory path using the version
+    dirpath = os.path.join(tensorboard_logger.log_dir, 'checkpoints')
+
+    checkpoint_callback = ModelCheckpoint(
         dirpath=dirpath,
         monitor='val_loss',
-        filename='{epoch}--{val_loss:.3f}',
+        filename='{epoch}-{val_loss:.3f}',
         save_last=True,
         save_top_k=3
     )
-        return checkpoint_callback
-    return None
+    return checkpoint_callback
 
 def get_metrics_callback():
     metrics = ['lpips', 'visualisation']
@@ -204,14 +204,14 @@ def train_vae(args):
     print(f'Latent dimension: {args.latent_dim}')
     
     #logger = get_logger(args, 'logs')
-    
+    #checkpoint_callback = get_checkpoint_callback(logger)
+
     #try a tensorboard logger
     current_dir = os.getcwd()
     print(f"Current Directory: {current_dir}")
     tensorboard_logger = TensorBoardLogger(save_dir=current_dir, name="tb_logs")
-
-    #checkpoint_callback = get_checkpoint_callback(logger)
-    #checkpoint_callback = get_vae_checkpoint_callback()
+    
+    checkpoint_callback = get_vae_checkpoint_callback(tensorboard_logger)
 
     fid_callback = get_metrics_callback()
 
@@ -219,20 +219,13 @@ def train_vae(args):
                                         patience=args.early_stopping_patience)
     lr_monitor = LearningRateMonitor(logging_interval='step')
     
-
     callbacks = [
+        checkpoint_callback,
         lr_monitor,
         early_stop_callback,
         pl_EMA(decay=0.999),
         fid_callback
     ]
-    
-    # Add the checkpoint callback only if it's not None
-    #if checkpoint_callback is not None:
-    #    callbacks.append(checkpoint_callback)
-    
-    #if fid_callback is not None:
-    #    callbacks.append(fid_callback)
 
     trainer = pl.Trainer(accelerator='gpu', devices=args.devices, strategy='ddp',
                         max_epochs=100000,

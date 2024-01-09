@@ -19,6 +19,7 @@ vae_checkpoint_path : None
 
 encoder:
   name: compressor_encoder
+  ch_mult: [1, 1, 2, 4]
   resolution: ${data.image_size}
   z_channels: 3
 

@@ -10,9 +10,9 @@ name: ${Dataset}_latent
 devices: 1
 
 paths:
-  data_dir_name: /home/gb511/rds_work/datasets #/store/CIA/gb511/datasets 
+  data_dir_name: /home/gb511/rds_work/datasets  #/store/CIA/gb511/datasets
 
-accumulate_grad_batches: 2
+accumulate_grad_batches: 1
 transfer: False #set it to True when you train a SB between either in the observation space or in the latent space
 batch_size: 32
 vae_checkpoint_path: null
